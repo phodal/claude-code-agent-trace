@@ -8,6 +8,7 @@ import com.openai.models.chat.completions.ChatCompletionMessageToolCall;
 import com.phodal.anthropicproxy.model.anthropic.AnthropicContent;
 import com.phodal.anthropicproxy.model.anthropic.AnthropicMessage;
 import com.phodal.anthropicproxy.model.anthropic.AnthropicRequest;
+import com.phodal.anthropicproxy.model.metrics.LinesModifiedInfo;
 import com.phodal.anthropicproxy.model.metrics.SessionInfo;
 import com.phodal.anthropicproxy.model.metrics.ToolCallLog;
 import com.phodal.anthropicproxy.model.metrics.TurnLog;
@@ -341,7 +342,7 @@ public class MetricsService {
                 .register(meterRegistry)
                 .increment();
 
-        int linesModified = 0;
+        LinesModifiedInfo linesInfo = LinesModifiedInfo.empty();
         boolean isEdit = isEditTool(toolName);
         
         // Check if it's an edit tool
@@ -350,12 +351,13 @@ public class MetricsService {
             userMetrics.incrementEditToolCalls();
             session.addEditToolCall();
             
-            // Try to extract lines modified from the arguments
-            linesModified = extractLinesModifiedFromSdkToolCall(funcToolCall);
-            if (linesModified > 0) {
-                totalLinesModifiedCounter.increment(linesModified);
-                userMetrics.addLinesModified(linesModified);
-                session.addLinesModified(linesModified);
+            // Extract lines modified from the arguments
+            linesInfo = extractLinesModifiedFromSdkToolCall(funcToolCall);
+            int netChange = linesInfo.getAbsoluteChange();
+            if (netChange > 0) {
+                totalLinesModifiedCounter.increment(netChange);
+                userMetrics.addLinesModified(netChange);
+                session.addLinesModified(netChange);
             }
         }
         
@@ -368,49 +370,34 @@ public class MetricsService {
                     .argsPreview(ToolCallLog.createArgsPreview(args, ARGS_PREVIEW_LENGTH))
                     .timestamp(LocalDateTime.now())
                     .status("ok")
-                    .linesModified(linesModified)
+                    .linesModified(linesInfo.getNetChange())
+                    .linesAdded(linesInfo.getLinesAdded())
+                    .linesRemoved(linesInfo.getLinesRemoved())
+                    .filePath(linesInfo.getFilePath())
                     .build();
             turnLog.addToolCall(toolCallLog);
             if (isEdit) {
                 turnLog.setEditToolCallCount(turnLog.getEditToolCallCount() + 1);
-                turnLog.setLinesModified(turnLog.getLinesModified() + linesModified);
+                turnLog.setLinesModified(turnLog.getLinesModified() + linesInfo.getNetChange());
+                turnLog.setLinesAdded(turnLog.getLinesAdded() + linesInfo.getLinesAdded());
+                turnLog.setLinesRemoved(turnLog.getLinesRemoved() + linesInfo.getLinesRemoved());
             }
         }
 
-        log.debug("Recorded SDK tool call: {} for user: {}, turnId: {}", toolName, userId, turnId);
+        log.debug("Recorded SDK tool call: {} for user: {}, turnId: {}, +{} -{} lines", 
+                toolName, userId, turnId, linesInfo.getLinesAdded(), linesInfo.getLinesRemoved());
     }
 
     /**
      * Extract number of lines modified from SDK tool call arguments
      */
-    private int extractLinesModifiedFromSdkToolCall(ChatCompletionMessageFunctionToolCall funcToolCall) {
+    private LinesModifiedInfo extractLinesModifiedFromSdkToolCall(ChatCompletionMessageFunctionToolCall funcToolCall) {
         try {
             String args = funcToolCall.function().arguments();
-            Map<String, Object> argsMap = objectMapper.readValue(args, Map.class);
-
-            int lines = 0;
-
-            if (argsMap.containsKey("new_str")) {
-                String newStr = String.valueOf(argsMap.get("new_str"));
-                lines = countLines(newStr);
-            } else if (argsMap.containsKey("content")) {
-                String content = String.valueOf(argsMap.get("content"));
-                lines = countLines(content);
-            } else if (argsMap.containsKey("newString")) {
-                String newString = String.valueOf(argsMap.get("newString"));
-                lines = countLines(newString);
-            } else if (argsMap.containsKey("code")) {
-                String code = String.valueOf(argsMap.get("code"));
-                lines = countLines(code);
-            } else if (argsMap.containsKey("newCode")) {
-                String newCode = String.valueOf(argsMap.get("newCode"));
-                lines = countLines(newCode);
-            }
-
-            return lines;
+            return extractLinesModifiedFromArgs(args);
         } catch (Exception e) {
             log.debug("Failed to extract lines modified from SDK: {}", e.getMessage());
-            return 0;
+            return LinesModifiedInfo.empty();
         }
     }
 
@@ -463,7 +450,7 @@ public class MetricsService {
                 .register(meterRegistry)
                 .increment();
 
-        int linesModified = 0;
+        LinesModifiedInfo linesInfo = LinesModifiedInfo.empty();
         boolean isEdit = isEditTool(toolName);
         
         // Check if it's an edit tool
@@ -472,12 +459,13 @@ public class MetricsService {
             userMetrics.incrementEditToolCalls();
             session.addEditToolCall();
             
-            // Try to extract lines modified from the arguments
-            linesModified = extractLinesModifiedFromArgs(args);
-            if (linesModified > 0) {
-                totalLinesModifiedCounter.increment(linesModified);
-                userMetrics.addLinesModified(linesModified);
-                session.addLinesModified(linesModified);
+            // Extract lines modified from the arguments
+            linesInfo = extractLinesModifiedFromArgs(args);
+            int netChange = linesInfo.getAbsoluteChange(); // Use absolute for counters
+            if (netChange > 0) {
+                totalLinesModifiedCounter.increment(netChange);
+                userMetrics.addLinesModified(netChange);
+                session.addLinesModified(netChange);
             }
         }
         
@@ -490,52 +478,96 @@ public class MetricsService {
                     .argsPreview(ToolCallLog.createArgsPreview(args, ARGS_PREVIEW_LENGTH))
                     .timestamp(LocalDateTime.now())
                     .status("ok")
-                    .linesModified(linesModified)
+                    .linesModified(linesInfo.getNetChange())
+                    .linesAdded(linesInfo.getLinesAdded())
+                    .linesRemoved(linesInfo.getLinesRemoved())
+                    .filePath(linesInfo.getFilePath())
                     .build();
             turnLog.addToolCall(toolCallLog);
             if (isEdit) {
                 turnLog.setEditToolCallCount(turnLog.getEditToolCallCount() + 1);
-                turnLog.setLinesModified(turnLog.getLinesModified() + linesModified);
+                turnLog.setLinesModified(turnLog.getLinesModified() + linesInfo.getNetChange());
+                turnLog.setLinesAdded(turnLog.getLinesAdded() + linesInfo.getLinesAdded());
+                turnLog.setLinesRemoved(turnLog.getLinesRemoved() + linesInfo.getLinesRemoved());
             }
         }
 
-        log.debug("Recorded streaming tool call: {} for user: {}, turnId: {}", toolName, userId, turnId);
+        log.debug("Recorded streaming tool call: {} for user: {}, turnId: {}, +{} -{} lines", 
+                toolName, userId, turnId, linesInfo.getLinesAdded(), linesInfo.getLinesRemoved());
     }
     
     /**
      * Extract lines modified from arguments string
+     * Returns detailed info including added/removed lines and file path
      */
-    private int extractLinesModifiedFromArgs(String args) {
+    private LinesModifiedInfo extractLinesModifiedFromArgs(String args) {
         if (args == null || args.isEmpty()) {
-            return 0;
+            return LinesModifiedInfo.empty();
         }
         
         try {
             Map<String, Object> argsMap = objectMapper.readValue(args, Map.class);
-
-            int lines = 0;
-
-            if (argsMap.containsKey("new_str")) {
-                String newStr = String.valueOf(argsMap.get("new_str"));
-                lines = countLines(newStr);
-            } else if (argsMap.containsKey("content")) {
-                String content = String.valueOf(argsMap.get("content"));
-                lines = countLines(content);
-            } else if (argsMap.containsKey("newString")) {
-                String newString = String.valueOf(argsMap.get("newString"));
-                lines = countLines(newString);
-            } else if (argsMap.containsKey("code")) {
-                String code = String.valueOf(argsMap.get("code"));
-                lines = countLines(code);
-            } else if (argsMap.containsKey("newCode")) {
-                String newCode = String.valueOf(argsMap.get("newCode"));
-                lines = countLines(newCode);
+            
+            // Extract file path if available
+            String filePath = null;
+            if (argsMap.containsKey("file_path")) {
+                filePath = String.valueOf(argsMap.get("file_path"));
+            } else if (argsMap.containsKey("path")) {
+                filePath = String.valueOf(argsMap.get("path"));
+            } else if (argsMap.containsKey("filePath")) {
+                filePath = String.valueOf(argsMap.get("filePath"));
             }
 
-            return lines;
+            int newLines = 0;
+            int oldLines = 0;
+
+            // Check for replacement patterns (has both old and new)
+            // Pattern 1: old_string / new_string (StrReplace style)
+            if (argsMap.containsKey("old_string") && argsMap.containsKey("new_string")) {
+                String oldStr = String.valueOf(argsMap.get("old_string"));
+                String newStr = String.valueOf(argsMap.get("new_string"));
+                oldLines = countLines(oldStr);
+                newLines = countLines(newStr);
+                return new LinesModifiedInfo(newLines, oldLines, filePath);
+            }
+            
+            // Pattern 2: old_str / new_str (Anthropic style)
+            if (argsMap.containsKey("old_str") && argsMap.containsKey("new_str")) {
+                String oldStr = String.valueOf(argsMap.get("old_str"));
+                String newStr = String.valueOf(argsMap.get("new_str"));
+                oldLines = countLines(oldStr);
+                newLines = countLines(newStr);
+                return new LinesModifiedInfo(newLines, oldLines, filePath);
+            }
+            
+            // Pattern 3: oldString / newString (camelCase style)
+            if (argsMap.containsKey("oldString") && argsMap.containsKey("newString")) {
+                String oldStr = String.valueOf(argsMap.get("oldString"));
+                String newStr = String.valueOf(argsMap.get("newString"));
+                oldLines = countLines(oldStr);
+                newLines = countLines(newStr);
+                return new LinesModifiedInfo(newLines, oldLines, filePath);
+            }
+
+            // For write/create operations (only new content)
+            if (argsMap.containsKey("new_str")) {
+                newLines = countLines(String.valueOf(argsMap.get("new_str")));
+            } else if (argsMap.containsKey("content")) {
+                newLines = countLines(String.valueOf(argsMap.get("content")));
+            } else if (argsMap.containsKey("contents")) {
+                newLines = countLines(String.valueOf(argsMap.get("contents")));
+            } else if (argsMap.containsKey("newString")) {
+                newLines = countLines(String.valueOf(argsMap.get("newString")));
+            } else if (argsMap.containsKey("code")) {
+                newLines = countLines(String.valueOf(argsMap.get("code")));
+            } else if (argsMap.containsKey("newCode")) {
+                newLines = countLines(String.valueOf(argsMap.get("newCode")));
+            }
+
+            return new LinesModifiedInfo(newLines, oldLines, filePath);
         } catch (Exception e) {
             log.debug("Failed to extract lines modified from args: {}", e.getMessage());
-            return 0;
+            return LinesModifiedInfo.empty();
         }
     }
 
@@ -560,7 +592,7 @@ public class MetricsService {
                 .register(meterRegistry)
                 .increment();
 
-        int linesModified = 0;
+        LinesModifiedInfo linesInfo = LinesModifiedInfo.empty();
         boolean isEdit = isEditTool(toolName);
         
         // Check if it's an edit tool
@@ -569,12 +601,13 @@ public class MetricsService {
             userMetrics.incrementEditToolCalls();
             session.addEditToolCall();
             
-            // Try to extract lines modified from the arguments
-            linesModified = extractLinesModified(toolCall);
-            if (linesModified > 0) {
-                totalLinesModifiedCounter.increment(linesModified);
-                userMetrics.addLinesModified(linesModified);
-                session.addLinesModified(linesModified);
+            // Extract lines modified from the arguments
+            linesInfo = extractLinesModified(toolCall);
+            int netChange = linesInfo.getAbsoluteChange();
+            if (netChange > 0) {
+                totalLinesModifiedCounter.increment(netChange);
+                userMetrics.addLinesModified(netChange);
+                session.addLinesModified(netChange);
             }
         }
         
@@ -587,16 +620,22 @@ public class MetricsService {
                     .argsPreview(ToolCallLog.createArgsPreview(args, ARGS_PREVIEW_LENGTH))
                     .timestamp(LocalDateTime.now())
                     .status("ok")
-                    .linesModified(linesModified)
+                    .linesModified(linesInfo.getNetChange())
+                    .linesAdded(linesInfo.getLinesAdded())
+                    .linesRemoved(linesInfo.getLinesRemoved())
+                    .filePath(linesInfo.getFilePath())
                     .build();
             turnLog.addToolCall(toolCallLog);
             if (isEdit) {
                 turnLog.setEditToolCallCount(turnLog.getEditToolCallCount() + 1);
-                turnLog.setLinesModified(turnLog.getLinesModified() + linesModified);
+                turnLog.setLinesModified(turnLog.getLinesModified() + linesInfo.getNetChange());
+                turnLog.setLinesAdded(turnLog.getLinesAdded() + linesInfo.getLinesAdded());
+                turnLog.setLinesRemoved(turnLog.getLinesRemoved() + linesInfo.getLinesRemoved());
             }
         }
 
-        log.debug("Recorded tool call: {} for user: {}, turnId: {}", toolName, userId, turnId);
+        log.debug("Recorded tool call: {} for user: {}, turnId: {}, +{} -{} lines", 
+                toolName, userId, turnId, linesInfo.getLinesAdded(), linesInfo.getLinesRemoved());
     }
 
     /**
@@ -617,41 +656,11 @@ public class MetricsService {
     /**
      * Extract number of lines modified from tool call arguments
      */
-    private int extractLinesModified(OpenAIToolCall toolCall) {
+    private LinesModifiedInfo extractLinesModified(OpenAIToolCall toolCall) {
         if (toolCall.getFunction() == null || toolCall.getFunction().getArguments() == null) {
-            return 0;
+            return LinesModifiedInfo.empty();
         }
-
-        try {
-            String args = toolCall.getFunction().getArguments();
-            Map<String, Object> argsMap = objectMapper.readValue(args, Map.class);
-
-            // Try different argument patterns
-            int lines = 0;
-
-            // For str_replace_editor or similar tools
-            if (argsMap.containsKey("new_str")) {
-                String newStr = String.valueOf(argsMap.get("new_str"));
-                lines = countLines(newStr);
-            } else if (argsMap.containsKey("content")) {
-                String content = String.valueOf(argsMap.get("content"));
-                lines = countLines(content);
-            } else if (argsMap.containsKey("newString")) {
-                String newString = String.valueOf(argsMap.get("newString"));
-                lines = countLines(newString);
-            } else if (argsMap.containsKey("code")) {
-                String code = String.valueOf(argsMap.get("code"));
-                lines = countLines(code);
-            } else if (argsMap.containsKey("newCode")) {
-                String newCode = String.valueOf(argsMap.get("newCode"));
-                lines = countLines(newCode);
-            }
-
-            return lines;
-        } catch (Exception e) {
-            log.debug("Failed to extract lines modified: {}", e.getMessage());
-            return 0;
-        }
+        return extractLinesModifiedFromArgs(toolCall.getFunction().getArguments());
     }
 
     /**

@@ -19,7 +19,10 @@ public class ToolCallLog {
     private LocalDateTime timestamp;
     private Long durationMs;
     private String status;  // "ok", "error", "timeout"
-    private int linesModified;
+    private int linesModified;  // net change (can be negative for deletions)
+    private int linesAdded;     // lines in new content
+    private int linesRemoved;   // lines in old content (for replacements)
+    private String filePath;    // affected file path if available
     private String errorMessage;
     
     /**

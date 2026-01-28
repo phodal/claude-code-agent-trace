@@ -194,6 +194,8 @@ public class MetricsDashboardController {
         map.put("toolCallCount", turn.getToolCallCount());
         map.put("editToolCallCount", turn.getEditToolCallCount());
         map.put("linesModified", turn.getLinesModified());
+        map.put("linesAdded", turn.getLinesAdded());
+        map.put("linesRemoved", turn.getLinesRemoved());
         map.put("hasError", turn.isHasError());
         map.put("errorMessage", turn.getErrorMessage());
         
@@ -217,6 +219,9 @@ public class MetricsDashboardController {
         map.put("durationMs", toolCall.getDurationMs());
         map.put("status", toolCall.getStatus());
         map.put("linesModified", toolCall.getLinesModified());
+        map.put("linesAdded", toolCall.getLinesAdded());
+        map.put("linesRemoved", toolCall.getLinesRemoved());
+        map.put("filePath", toolCall.getFilePath());
         map.put("errorMessage", toolCall.getErrorMessage());
         return map;
     }

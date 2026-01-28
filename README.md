@@ -8,7 +8,9 @@ Anthropic API 代理服务，将 Anthropic API 请求转换为 OpenAI 格式，�
 - **流式支持**: 完整的流式响应支持 (Server-Sent Events)
 - **工具调用**: 支持 Anthropic 工具调用 (Tools/Function Calling)
 - **用户识别**: 多方式用户识别 (API Key、Header、IP)
-- **指标监控**: 集成 Prometheus 指标和 Dashboard
+- **指标监控**: Prometheus 集成 + 可视化 Dashboard
+- **会话追踪**: Session/Turn/Message 级别的详细指标跟踪
+- **工具调用详情**: 记录每次工具调用的参数、耗时、修改行数
 - **响应式**: 基于 Spring WebFlux 的非阻塞架构
 
 ## 快速开始
@@ -99,15 +101,41 @@ curl http://localhost:8080/anthropic/health
 
 ## 监控指标
 
-### Prometheus 端点
+### Dashboard
+
+访问 `http://localhost:8080/dashboard` 查看可视化监控面板，支持以下标签页：
+
+- **Messages (Turns)**: 查看每条消息的详细信息，包括工具调用、延迟、Token 消耗
+- **Sessions**: 用户会话概览，包含累计指标和平均数据
+- **Users**: 用户级别的指标统计
+- **Tool Distribution**: 工具调用分布图表
+
+### API 端点
+
+| 端点 | 描述 |
+|------|------|
+| `GET /metrics/api/turns` | 获取最近的 Turn 列表 |
+| `GET /metrics/api/turns/{turnId}` | 获取指定 Turn 的详细信息 |
+| `GET /metrics/api/sessions` | 获取活跃会话列表 |
+| `GET /metrics/api/sessions/{sessionId}` | 获取会话详情 |
+| `GET /metrics/api/sessions/{sessionId}/turns` | 获取会话中的所有消息 |
+| `GET /metrics/api/users/{userId}/turns` | 获取用户的所有消息 |
+| `GET /metrics/api/users/{userId}/sessions` | 获取用户的所有会话 |
+| `GET /actuator/prometheus` | Prometheus 指标端点 |
+
+### Prometheus 指标
 
 ```bash
 curl http://localhost:8080/actuator/prometheus
 ```
 
-### Dashboard
-
-访问 `http://localhost:8080/dashboard` 查看可视化监控面板。
+主要指标：
+- `claude_code.requests.total` - 总请求数
+- `claude_code.requests.by_model` - 按模型分组的请求数
+- `claude_code.tool_calls.total` - 工具调用总数
+- `claude_code.tool_calls.by_name` - 按工具名称分组的调用数
+- `claude_code.edit_tool_calls.total` - 编辑工具调用次数
+- `claude_code.lines_modified.total` - 修改的总行数
 
 ## 项目结构
 
@@ -122,10 +150,15 @@ src/main/java/com/phodal/anthropicproxy/
 │   └── MetricsDashboardController.java # Dashboard 控制器
 ├── model/
 │   ├── anthropic/                    # Anthropic API 模型
-│   └── openai/                       # OpenAI API 模型
+│   ├── openai/                       # OpenAI API 模型
+│   └── metrics/                      # 指标模型
+│       ├── SessionInfo.java          # 会话信息
+│       ├── TurnLog.java              # Turn/消息级别指标
+│       └── ToolCallLog.java          # 工具调用详情
 └── service/
     ├── MetricsService.java           # 指标服务
     ├── OpenAISdkService.java         # OpenAI SDK 服务
+    ├── SessionManager.java           # 会话管理器
     └── UserIdentificationService.java # 用户识别服务
 ```
 

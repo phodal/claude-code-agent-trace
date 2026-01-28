@@ -28,7 +28,9 @@ public class TurnLog {
     private Long latencyMs;
     private int toolCallCount;
     private int editToolCallCount;
-    private int linesModified;
+    private int linesModified;  // net change (added - removed)
+    private int linesAdded;     // total lines added
+    private int linesRemoved;   // total lines removed
     private boolean hasError;
     private String errorMessage;
     

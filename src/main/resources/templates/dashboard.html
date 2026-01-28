@@ -279,7 +279,7 @@
                         ${turn.toolCallCount > 0 ? `<span class="tool-badge">${turn.toolCallCount} calls</span>` : '<span class="text-gray-400">-</span>'}
                     </td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm">
-                        ${turn.editToolCallCount > 0 ? `<span class="edit-badge">${turn.editToolCallCount} / ${turn.linesModified} lines</span>` : '<span class="text-gray-400">-</span>'}
+                        ${turn.editToolCallCount > 0 ? `<span class="edit-badge">${turn.editToolCallCount} edits</span> <span class="text-green-600">+${turn.linesAdded || 0}</span> <span class="text-red-600">-${turn.linesRemoved || 0}</span>` : '<span class="text-gray-400">-</span>'}
                     </td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${turn.promptTokens || 0} / ${turn.completionTokens || 0}</td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${turn.latencyMs ? turn.latencyMs + 'ms' : '-'}</td>
@@ -303,10 +303,18 @@
                     ${toolCalls.map(tc => `
                         <div class="bg-white p-3 rounded border border-gray-200">
                             <div class="flex items-center justify-between">
-                                <span class="font-medium text-sm">${tc.name}</span>
+                                <div>
+                                    <span class="font-medium text-sm">${tc.name}</span>
+                                    ${tc.filePath ? `<span class="ml-2 text-xs text-gray-500 font-mono">${truncate(tc.filePath, 40)}</span>` : ''}
+                                </div>
                                 <div class="flex items-center space-x-2">
-                                    ${tc.linesModified > 0 ? `<span class="edit-badge">${tc.linesModified} lines</span>` : ''}
-                                    <span class="text-xs text-gray-500">${tc.status}</span>
+                                    ${(tc.linesAdded > 0 || tc.linesRemoved > 0) ? `
+                                        <span class="text-xs">
+                                            <span class="text-green-600 font-medium">+${tc.linesAdded || 0}</span>
+                                            <span class="text-red-600 font-medium">-${tc.linesRemoved || 0}</span>
+                                        </span>
+                                    ` : ''}
+                                    <span class="text-xs px-2 py-0.5 rounded ${tc.status === 'ok' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${tc.status}</span>
                                 </div>
                             </div>
                             ${tc.argsPreview ? `<div class="mt-1 text-xs text-gray-600 font-mono bg-gray-50 p-2 rounded overflow-x-auto">${escapeHtml(tc.argsPreview)}</div>` : ''}
