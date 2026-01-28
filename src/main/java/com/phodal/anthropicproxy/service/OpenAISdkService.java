@@ -81,24 +81,42 @@ public class OpenAISdkService {
                 String[] currentToolName = {null};
                 String[] currentToolId = {null};
                 int[] currentToolIndex = {-1};
-                int[] contentBlockIndex = {0};
+                int[] currentToolBlockIndex = {-1}; // Anthropic content_block index for current tool_use block
                 boolean[] messageStartSent = {false};
                 boolean[] textBlockStarted = {false};
+                boolean[] textBlockClosed = {false};
+                String[] finalStopReason = {"end_turn"};
+                boolean[] shouldStopReading = {false};
+                StringBuilder accumulatedText = new StringBuilder();
+                boolean[] textSent = {false};
+                int[] lastToolBlockIndex = {0}; // tool blocks start from 1 (index 0 reserved for text)
                 List<ToolCallInfo> collectedToolCalls = new ArrayList<>();
 
                 try (StreamResponse<ChatCompletionChunk> stream = 
                         client.chat().completions().createStreaming(params)) {
-                    
-                    stream.stream().forEach(chunk -> {
+
+                    var iterator = stream.stream().iterator();
+                    while (iterator.hasNext()) {
+                        ChatCompletionChunk chunk = iterator.next();
                         List<String> events = new ArrayList<>();
 
-                        // Send message_start on first chunk
+                        // Send initial events on first chunk (match Python/Anthropic behavior)
                         if (!messageStartSent[0]) {
                             messageStartSent[0] = true;
                             events.add(formatSSE(Map.of(
                                 "type", "message_start",
                                 "message", createMessageStartData(messageId, requestModel)
                             )));
+
+                            // Always open an empty text block at index 0 first.
+                            textBlockStarted[0] = true;
+                            events.add(formatSSE(Map.of(
+                                "type", "content_block_start",
+                                "index", 0,
+                                "content_block", Map.of("type", "text", "text", "")
+                            )));
+                            // Anthropic sends a ping early; some clients behave better with it.
+                            events.add(formatSSE(Map.of("type", "ping")));
                         }
 
                         if (chunk.choices().isEmpty()) return;
@@ -108,19 +126,16 @@ public class OpenAISdkService {
 
                         // Handle text content
                         delta.content().filter(c -> !c.isEmpty()).ifPresent(content -> {
-                            if (!textBlockStarted[0]) {
-                                textBlockStarted[0] = true;
+                            accumulatedText.append(content);
+                            // Stream text deltas only while we're still in the text block.
+                            if (currentToolIndex[0] < 0 && !textBlockClosed[0]) {
+                                textSent[0] = true;
                                 events.add(formatSSE(Map.of(
-                                    "type", "content_block_start",
-                                    "index", contentBlockIndex[0]++,
-                                    "content_block", Map.of("type", "text", "text", "")
+                                    "type", "content_block_delta",
+                                    "index", 0,
+                                    "delta", Map.of("type", "text_delta", "text", content)
                                 )));
                             }
-                            events.add(formatSSE(Map.of(
-                                "type", "content_block_delta",
-                                "index", contentBlockIndex[0] - 1,
-                                "delta", Map.of("type", "text_delta", "text", content)
-                            )));
                         });
 
                         // Handle tool calls
@@ -131,23 +146,40 @@ public class OpenAISdkService {
                                 // New tool call starting
                                 toolCall.id().ifPresent(id -> {
                                     if (toolIdx != currentToolIndex[0]) {
-                                        // Close previous text block
-                                        if (textBlockStarted[0]) {
+                                        // First tool call: ensure text block is properly finalized (Python logic)
+                                        if (!textBlockClosed[0]) {
+                                            // If we accumulated text but never emitted it (e.g., first chunk had text+tool_calls),
+                                            // emit the accumulated text before closing.
+                                            if (!textSent[0]) {
+                                                // Claude Code sometimes renders a blank "step" if a tool_use turn has
+                                                // no visible text deltas at all. Python proxy may avoid this depending
+                                                // on chunk shapes; to stabilize UI we emit a single whitespace delta.
+                                                String textToEmit = !accumulatedText.isEmpty() ? accumulatedText.toString() : "\u00A0";
+                                                textSent[0] = true;
+                                                events.add(formatSSE(Map.of(
+                                                    "type", "content_block_delta",
+                                                    "index", 0,
+                                                    "delta", Map.of("type", "text_delta", "text", textToEmit)
+                                                )));
+                                            }
                                             events.add(formatSSE(Map.of(
                                                 "type", "content_block_stop",
-                                                "index", contentBlockIndex[0] - 1
+                                                "index", 0
                                             )));
-                                            textBlockStarted[0] = false;
+                                            textBlockClosed[0] = true;
                                         }
                                         
                                         // Save previous tool call
                                         if (currentToolIndex[0] >= 0 && currentToolId[0] != null) {
                                             collectedToolCalls.add(new ToolCallInfo(
                                                 currentToolId[0], currentToolName[0], currentToolArgs.toString()));
-                                            events.add(formatSSE(Map.of(
-                                                "type", "content_block_stop",
-                                                "index", contentBlockIndex[0] - 1
-                                            )));
+                                            if (currentToolBlockIndex[0] >= 0) {
+                                                events.add(formatSSE(Map.of(
+                                                    "type", "content_block_stop",
+                                                    "index", currentToolBlockIndex[0]
+                                                )));
+                                                currentToolBlockIndex[0] = -1;
+                                            }
                                         }
                                         
                                         currentToolIndex[0] = toolIdx;
@@ -156,10 +188,11 @@ public class OpenAISdkService {
                                             .flatMap(ChatCompletionChunk.Choice.Delta.ToolCall.Function::name)
                                             .orElse("");
                                         currentToolArgs.setLength(0);
+                                        currentToolBlockIndex[0] = ++lastToolBlockIndex[0];
                                         
                                         events.add(formatSSE(Map.of(
                                             "type", "content_block_start",
-                                            "index", contentBlockIndex[0]++,
+                                            "index", currentToolBlockIndex[0],
                                             "content_block", Map.of(
                                                 "type", "tool_use",
                                                 "id", currentToolId[0],
@@ -175,7 +208,7 @@ public class OpenAISdkService {
                                     currentToolArgs.append(args);
                                     events.add(formatSSE(Map.of(
                                         "type", "content_block_delta",
-                                        "index", contentBlockIndex[0] - 1,
+                                        "index", currentToolBlockIndex[0],
                                         "delta", Map.of("type", "input_json_delta", "partial_json", args)
                                     )));
                                 });
@@ -184,38 +217,92 @@ public class OpenAISdkService {
 
                         // Handle finish reason
                         choice.finishReason().ifPresent(reason -> {
+                            // Map OpenAI finish reason to Anthropic stop_reason
+                            String r = reason.toString().toLowerCase();
+                            if (r.contains("tool")) {
+                                finalStopReason[0] = "tool_use";
+                            } else if (r.contains("length")) {
+                                finalStopReason[0] = "max_tokens";
+                            } else if (r.contains("stop")) {
+                                finalStopReason[0] = "end_turn";
+                            }
                             if (currentToolIndex[0] >= 0 && currentToolId[0] != null) {
                                 collectedToolCalls.add(new ToolCallInfo(
                                     currentToolId[0], currentToolName[0], currentToolArgs.toString()));
-                                events.add(formatSSE(Map.of(
-                                    "type", "content_block_stop",
-                                    "index", contentBlockIndex[0] - 1
-                                )));
+                                if (currentToolBlockIndex[0] >= 0) {
+                                    events.add(formatSSE(Map.of(
+                                        "type", "content_block_stop",
+                                        "index", currentToolBlockIndex[0]
+                                    )));
+                                    currentToolBlockIndex[0] = -1;
+                                }
                                 currentToolIndex[0] = -1;
                             }
+
+                            // If we never closed text block (no tool calls) do it here
+                            if (textBlockStarted[0] && !textBlockClosed[0]) {
+                                events.add(formatSSE(Map.of(
+                                    "type", "content_block_stop",
+                                    "index", 0
+                                )));
+                                textBlockClosed[0] = true;
+                            }
+                            // Important: stop reading upstream stream immediately.
+                            // Some OpenAI-compatible providers don't close the stream promptly,
+                            // which leaves Claude Code stuck in "loading" even after we've shown content.
+                            shouldStopReading[0] = true;
                         });
 
-                        events.forEach(sink::next);
-                    });
+                        if (!events.isEmpty()) {
+                            // Emit as a single chunk to reduce client UI "empty step" renders
+                            // (Claude Code may render intermediate events as blank lines if they arrive separately).
+                            sink.next(String.join("", events));
+                        }
+                        if (shouldStopReading[0]) {
+                            break;
+                        }
+                    }
 
                     // Final events
-                    if (textBlockStarted[0]) {
-                        sink.next(formatSSE(Map.of(
+                    StringBuilder finalOut = new StringBuilder();
+
+                    if (currentToolIndex[0] >= 0 && currentToolId[0] != null) {
+                        collectedToolCalls.add(new ToolCallInfo(
+                            currentToolId[0], currentToolName[0], currentToolArgs.toString()));
+                        if (currentToolBlockIndex[0] >= 0) {
+                            finalOut.append(formatSSE(Map.of(
+                                "type", "content_block_stop",
+                                "index", currentToolBlockIndex[0]
+                            )));
+                            currentToolBlockIndex[0] = -1;
+                        }
+                        currentToolIndex[0] = -1;
+                    }
+
+                    // Close text block if it wasn't closed by tool_use
+                    if (textBlockStarted[0] && !textBlockClosed[0]) {
+                        finalOut.append(formatSSE(Map.of(
                             "type", "content_block_stop",
-                            "index", contentBlockIndex[0] - 1
+                            "index", 0
                         )));
                     }
                     
                     Map<String, Object> deltaContent = new HashMap<>();
-                    deltaContent.put("stop_reason", "end_turn");
+                    deltaContent.put("stop_reason", finalStopReason[0]);
                     deltaContent.put("stop_sequence", null);
                     
-                    sink.next(formatSSE(Map.of(
+                    finalOut.append(formatSSE(Map.of(
                         "type", "message_delta",
                         "delta", deltaContent,
                         "usage", Map.of("output_tokens", 0)
                     )));
-                    sink.next(formatSSE(Map.of("type", "message_stop")));
+                    finalOut.append(formatSSE(Map.of("type", "message_stop")));
+                    // Match Anthropic/OpenAI style end marker that many clients expect
+                    finalOut.append("data: [DONE]\n\n");
+
+                    if (!finalOut.isEmpty()) {
+                        sink.next(finalOut.toString());
+                    }
                     
                     long latencyMs = System.currentTimeMillis() - startTime;
                     metricsService.recordStreamingToolCalls(userId, turnId, collectedToolCalls, latencyMs);
@@ -238,7 +325,13 @@ public class OpenAISdkService {
         data.put("model", model != null ? model : "unknown");
         data.put("stop_reason", null);
         data.put("stop_sequence", null);
-        data.put("usage", Map.of("input_tokens", 0, "output_tokens", 0));
+        // Match Python proxy / Anthropic shape used by Claude Code
+        data.put("usage", Map.of(
+            "input_tokens", 0,
+            "cache_creation_input_tokens", 0,
+            "cache_read_input_tokens", 0,
+            "output_tokens", 0
+        ));
         return data;
     }
 
