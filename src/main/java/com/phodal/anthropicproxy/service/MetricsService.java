@@ -5,7 +5,12 @@ import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionMessage;
 import com.openai.models.chat.completions.ChatCompletionMessageFunctionToolCall;
 import com.openai.models.chat.completions.ChatCompletionMessageToolCall;
+import com.phodal.anthropicproxy.model.anthropic.AnthropicContent;
+import com.phodal.anthropicproxy.model.anthropic.AnthropicMessage;
 import com.phodal.anthropicproxy.model.anthropic.AnthropicRequest;
+import com.phodal.anthropicproxy.model.metrics.SessionInfo;
+import com.phodal.anthropicproxy.model.metrics.ToolCallLog;
+import com.phodal.anthropicproxy.model.metrics.TurnLog;
 import com.phodal.anthropicproxy.model.openai.OpenAIResponse;
 import com.phodal.anthropicproxy.model.openai.OpenAIToolCall;
 import io.micrometer.core.instrument.Counter;
@@ -28,6 +33,7 @@ public class MetricsService {
 
     private final MeterRegistry meterRegistry;
     private final ObjectMapper objectMapper;
+    private final SessionManager sessionManager;
 
     // Counters
     private final Counter totalRequestsCounter;
@@ -42,7 +48,17 @@ public class MetricsService {
     @Getter
     private final List<RequestLog> recentRequests = Collections.synchronizedList(new LinkedList<>());
     
+    // Turn-level logs (message-level detail)
+    @Getter
+    private final List<TurnLog> recentTurns = Collections.synchronizedList(new LinkedList<>());
+    
+    // Active turns being processed (turnId -> TurnLog)
+    private final Map<String, TurnLog> activeTurns = new ConcurrentHashMap<>();
+    
     private static final int MAX_RECENT_REQUESTS = 100;
+    private static final int MAX_RECENT_TURNS = 200;
+    private static final int MESSAGE_PREVIEW_LENGTH = 100;
+    private static final int ARGS_PREVIEW_LENGTH = 150;
 
     // Tool names that are considered edit tools
     private static final Set<String> EDIT_TOOL_NAMES = Set.of(
@@ -57,9 +73,10 @@ public class MetricsService {
             "edit_notebook_file"
     );
 
-    public MetricsService(MeterRegistry meterRegistry, ObjectMapper objectMapper) {
+    public MetricsService(MeterRegistry meterRegistry, ObjectMapper objectMapper, SessionManager sessionManager) {
         this.meterRegistry = meterRegistry;
         this.objectMapper = objectMapper;
+        this.sessionManager = sessionManager;
 
         this.totalRequestsCounter = Counter.builder("claude_code.requests.total")
                 .description("Total number of requests")
@@ -79,13 +96,21 @@ public class MetricsService {
     }
 
     /**
-     * Record a request
+     * Record a request and create a TurnLog
+     * Returns turnId for tracking tool calls
      */
-    public void recordRequest(String userId, AnthropicRequest request, Map<String, String> headers) {
+    public String recordRequest(String userId, AnthropicRequest request, Map<String, String> headers) {
         totalRequestsCounter.increment();
         
         UserMetrics userMetrics = userMetricsMap.computeIfAbsent(userId, k -> new UserMetrics(userId));
         userMetrics.incrementRequests();
+        
+        // Get or create session
+        SessionInfo session = sessionManager.getOrCreateSession(userId);
+        session.incrementTurns();
+        
+        // Generate turnId
+        String turnId = generateTurnId(userId);
         
         // Record with model tag
         Counter.builder("claude_code.requests.by_model")
@@ -94,7 +119,7 @@ public class MetricsService {
                 .register(meterRegistry)
                 .increment();
 
-        // Add to recent requests
+        // Add to recent requests (keep backward compatible)
         RequestLog requestLog = new RequestLog();
         requestLog.setTimestamp(LocalDateTime.now());
         requestLog.setUserId(userId);
@@ -104,69 +129,195 @@ public class MetricsService {
         
         addRecentRequest(requestLog);
         
-        log.debug("Recorded request from user: {}, model: {}", userId, request.getModel());
+        // Create TurnLog
+        String lastUserMessage = extractLastUserMessage(request);
+        TurnLog turnLog = TurnLog.builder()
+                .turnId(turnId)
+                .userId(userId)
+                .sessionId(session.getSessionId())
+                .timestamp(LocalDateTime.now())
+                .model(request.getModel())
+                .stream(Boolean.TRUE.equals(request.getStream()))
+                .toolsOfferedCount(request.getTools() != null ? request.getTools().size() : 0)
+                .lastUserMessagePreview(TurnLog.createMessagePreview(lastUserMessage, MESSAGE_PREVIEW_LENGTH))
+                .build();
+        
+        activeTurns.put(turnId, turnLog);
+        
+        log.debug("Recorded request from user: {}, model: {}, turnId: {}", userId, request.getModel(), turnId);
+        return turnId;
+    }
+    
+    /**
+     * Extract the last user message from request for preview
+     */
+    private String extractLastUserMessage(AnthropicRequest request) {
+        if (request.getMessages() == null || request.getMessages().isEmpty()) {
+            return "";
+        }
+        
+        // Find the last user message
+        for (int i = request.getMessages().size() - 1; i >= 0; i--) {
+            AnthropicMessage msg = request.getMessages().get(i);
+            if ("user".equals(msg.getRole())) {
+                Object content = msg.getContent();
+                if (content instanceof String) {
+                    return (String) content;
+                } else if (content instanceof List) {
+                    // Content blocks - extract text
+                    StringBuilder sb = new StringBuilder();
+                    try {
+                        @SuppressWarnings("unchecked")
+                        List<Map<String, Object>> blocks = (List<Map<String, Object>>) content;
+                        for (Map<String, Object> block : blocks) {
+                            if ("text".equals(block.get("type")) && block.get("text") != null) {
+                                sb.append(block.get("text")).append(" ");
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.debug("Failed to parse content blocks: {}", e.getMessage());
+                    }
+                    return sb.toString().trim();
+                }
+            }
+        }
+        return "";
+    }
+    
+    private String generateTurnId(String userId) {
+        return String.format("turn-%s-%d-%s",
+                userId.length() > 6 ? userId.substring(0, 6) : userId,
+                System.currentTimeMillis(),
+                UUID.randomUUID().toString().substring(0, 6));
     }
 
     /**
      * Record response and extract tool call metrics
      */
-    public void recordResponse(String userId, OpenAIResponse response) {
+    public void recordResponse(String userId, String turnId, OpenAIResponse response, long latencyMs) {
+        TurnLog turnLog = activeTurns.get(turnId);
+        
         if (response == null || response.getChoices() == null || response.getChoices().isEmpty()) {
+            if (turnLog != null) {
+                finalizeTurnLog(turnLog, latencyMs, true, "Empty response");
+            }
             return;
         }
 
         var message = response.getChoices().get(0).getMessage();
         if (message == null) {
+            if (turnLog != null) {
+                finalizeTurnLog(turnLog, latencyMs, true, "No message in response");
+            }
             return;
         }
 
         UserMetrics userMetrics = userMetricsMap.computeIfAbsent(userId, k -> new UserMetrics(userId));
+        SessionInfo session = sessionManager.getOrCreateSession(userId);
 
         // Record tool calls
         if (message.getToolCalls() != null) {
             for (OpenAIToolCall toolCall : message.getToolCalls()) {
-                recordToolCall(userId, toolCall, userMetrics);
+                recordToolCall(userId, turnId, toolCall, userMetrics, session, turnLog);
             }
         }
 
         // Record tokens if available
+        int promptTokens = 0, completionTokens = 0;
         if (response.getUsage() != null) {
-            userMetrics.addInputTokens(response.getUsage().getPromptTokens() != null ? response.getUsage().getPromptTokens() : 0);
-            userMetrics.addOutputTokens(response.getUsage().getCompletionTokens() != null ? response.getUsage().getCompletionTokens() : 0);
+            promptTokens = response.getUsage().getPromptTokens() != null ? response.getUsage().getPromptTokens() : 0;
+            completionTokens = response.getUsage().getCompletionTokens() != null ? response.getUsage().getCompletionTokens() : 0;
+            userMetrics.addInputTokens(promptTokens);
+            userMetrics.addOutputTokens(completionTokens);
+            session.addTokens(promptTokens, completionTokens);
+        }
+        
+        if (turnLog != null) {
+            turnLog.setPromptTokens(promptTokens);
+            turnLog.setCompletionTokens(completionTokens);
+            finalizeTurnLog(turnLog, latencyMs, false, null);
         }
     }
 
     /**
      * Record response from OpenAI SDK ChatCompletion
      */
-    public void recordSdkResponse(String userId, ChatCompletion completion) {
+    public void recordSdkResponse(String userId, String turnId, ChatCompletion completion, long latencyMs) {
+        TurnLog turnLog = activeTurns.get(turnId);
+        
         if (completion == null || completion.choices().isEmpty()) {
+            if (turnLog != null) {
+                finalizeTurnLog(turnLog, latencyMs, true, "Empty completion");
+            }
             return;
         }
 
         ChatCompletionMessage message = completion.choices().get(0).message();
         UserMetrics userMetrics = userMetricsMap.computeIfAbsent(userId, k -> new UserMetrics(userId));
+        SessionInfo session = sessionManager.getOrCreateSession(userId);
 
         // Record tool calls - toolCalls() returns Optional<List>
         Optional<List<ChatCompletionMessageToolCall>> toolCallsOpt = message.toolCalls();
         if (toolCallsOpt.isPresent()) {
             List<ChatCompletionMessageToolCall> toolCalls = toolCallsOpt.get();
             for (ChatCompletionMessageToolCall toolCall : toolCalls) {
-                recordSdkToolCall(userId, toolCall, userMetrics);
+                recordSdkToolCall(userId, turnId, toolCall, userMetrics, session, turnLog);
             }
         }
 
         // Record tokens if available
+        final int[] tokens = {0, 0};
         completion.usage().ifPresent(usage -> {
-            userMetrics.addInputTokens((int) usage.promptTokens());
-            userMetrics.addOutputTokens((int) usage.completionTokens());
+            tokens[0] = (int) usage.promptTokens();
+            tokens[1] = (int) usage.completionTokens();
+            userMetrics.addInputTokens(tokens[0]);
+            userMetrics.addOutputTokens(tokens[1]);
+            session.addTokens(tokens[0], tokens[1]);
         });
+        
+        if (turnLog != null) {
+            turnLog.setPromptTokens(tokens[0]);
+            turnLog.setCompletionTokens(tokens[1]);
+            finalizeTurnLog(turnLog, latencyMs, false, null);
+        }
+    }
+    
+    /**
+     * Finalize a TurnLog and move it to recent turns
+     */
+    private void finalizeTurnLog(TurnLog turnLog, long latencyMs, boolean hasError, String errorMessage) {
+        turnLog.setLatencyMs(latencyMs);
+        turnLog.setHasError(hasError);
+        turnLog.setErrorMessage(errorMessage);
+        
+        // Update session latency
+        SessionInfo session = sessionManager.getOrCreateSession(turnLog.getUserId());
+        session.addLatency(latencyMs);
+        if (hasError) {
+            session.incrementErrors();
+        }
+        
+        addRecentTurn(turnLog);
+        activeTurns.remove(turnLog.getTurnId());
+        
+        log.debug("Finalized turn {} with {} tool calls, latency {}ms", 
+                turnLog.getTurnId(), turnLog.getToolCallCount(), latencyMs);
+    }
+    
+    private void addRecentTurn(TurnLog turnLog) {
+        synchronized (recentTurns) {
+            recentTurns.add(0, turnLog);
+            while (recentTurns.size() > MAX_RECENT_TURNS) {
+                recentTurns.remove(recentTurns.size() - 1);
+            }
+        }
     }
 
     /**
      * Record a single tool call from SDK
      */
-    private void recordSdkToolCall(String userId, ChatCompletionMessageToolCall toolCall, UserMetrics userMetrics) {
+    private void recordSdkToolCall(String userId, String turnId, ChatCompletionMessageToolCall toolCall, 
+                                    UserMetrics userMetrics, SessionInfo session, TurnLog turnLog) {
         // Get the function tool call from the union type
         Optional<ChatCompletionMessageFunctionToolCall> funcToolCallOpt = toolCall.function();
         if (funcToolCallOpt.isEmpty()) {
@@ -175,10 +326,13 @@ public class MetricsService {
         
         ChatCompletionMessageFunctionToolCall funcToolCall = funcToolCallOpt.get();
         String toolName = funcToolCall.function().name();
+        String toolCallId = funcToolCall.id();
+        String args = funcToolCall.function().arguments();
         
         totalToolCallsCounter.increment();
         userMetrics.incrementToolCalls();
         userMetrics.addToolCall(toolName);
+        session.addToolCall(toolName);
 
         // Record by tool name
         Counter.builder("claude_code.tool_calls.by_name")
@@ -187,20 +341,43 @@ public class MetricsService {
                 .register(meterRegistry)
                 .increment();
 
+        int linesModified = 0;
+        boolean isEdit = isEditTool(toolName);
+        
         // Check if it's an edit tool
-        if (isEditTool(toolName)) {
+        if (isEdit) {
             editToolCallsCounter.increment();
             userMetrics.incrementEditToolCalls();
+            session.addEditToolCall();
             
             // Try to extract lines modified from the arguments
-            int linesModified = extractLinesModifiedFromSdkToolCall(funcToolCall);
+            linesModified = extractLinesModifiedFromSdkToolCall(funcToolCall);
             if (linesModified > 0) {
                 totalLinesModifiedCounter.increment(linesModified);
                 userMetrics.addLinesModified(linesModified);
+                session.addLinesModified(linesModified);
+            }
+        }
+        
+        // Create ToolCallLog and add to TurnLog
+        if (turnLog != null) {
+            ToolCallLog toolCallLog = ToolCallLog.builder()
+                    .toolCallId(toolCallId != null ? toolCallId : UUID.randomUUID().toString())
+                    .turnId(turnId)
+                    .name(toolName)
+                    .argsPreview(ToolCallLog.createArgsPreview(args, ARGS_PREVIEW_LENGTH))
+                    .timestamp(LocalDateTime.now())
+                    .status("ok")
+                    .linesModified(linesModified)
+                    .build();
+            turnLog.addToolCall(toolCallLog);
+            if (isEdit) {
+                turnLog.setEditToolCallCount(turnLog.getEditToolCallCount() + 1);
+                turnLog.setLinesModified(turnLog.getLinesModified() + linesModified);
             }
         }
 
-        log.debug("Recorded SDK tool call: {} for user: {}", toolName, userId);
+        log.debug("Recorded SDK tool call: {} for user: {}, turnId: {}", toolName, userId, turnId);
     }
 
     /**
@@ -240,30 +417,44 @@ public class MetricsService {
     /**
      * Record streaming complete with collected tool calls (using ToolCallInfo from OpenAISdkService)
      */
-    public void recordStreamingToolCalls(String userId, List<OpenAISdkService.ToolCallInfo> toolCalls) {
+    public void recordStreamingToolCalls(String userId, String turnId, List<OpenAISdkService.ToolCallInfo> toolCalls, long latencyMs) {
+        TurnLog turnLog = activeTurns.get(turnId);
+        
         if (toolCalls == null || toolCalls.isEmpty()) {
+            if (turnLog != null) {
+                finalizeTurnLog(turnLog, latencyMs, false, null);
+            }
             return;
         }
 
         UserMetrics userMetrics = userMetricsMap.computeIfAbsent(userId, k -> new UserMetrics(userId));
+        SessionInfo session = sessionManager.getOrCreateSession(userId);
         
         for (OpenAISdkService.ToolCallInfo toolCallInfo : toolCalls) {
-            recordToolCallInfo(userId, toolCallInfo, userMetrics);
+            recordToolCallInfo(userId, turnId, toolCallInfo, userMetrics, session, turnLog);
+        }
+        
+        if (turnLog != null) {
+            finalizeTurnLog(turnLog, latencyMs, false, null);
         }
     }
     
     /**
      * Record a tool call from ToolCallInfo
      */
-    private void recordToolCallInfo(String userId, OpenAISdkService.ToolCallInfo toolCallInfo, UserMetrics userMetrics) {
+    private void recordToolCallInfo(String userId, String turnId, OpenAISdkService.ToolCallInfo toolCallInfo, 
+                                     UserMetrics userMetrics, SessionInfo session, TurnLog turnLog) {
         String toolName = toolCallInfo.name();
         if (toolName == null) {
             toolName = "unknown";
         }
+        String toolCallId = toolCallInfo.id();
+        String args = toolCallInfo.arguments();
         
         totalToolCallsCounter.increment();
         userMetrics.incrementToolCalls();
         userMetrics.addToolCall(toolName);
+        session.addToolCall(toolName);
 
         // Record by tool name
         Counter.builder("claude_code.tool_calls.by_name")
@@ -272,20 +463,43 @@ public class MetricsService {
                 .register(meterRegistry)
                 .increment();
 
+        int linesModified = 0;
+        boolean isEdit = isEditTool(toolName);
+        
         // Check if it's an edit tool
-        if (isEditTool(toolName)) {
+        if (isEdit) {
             editToolCallsCounter.increment();
             userMetrics.incrementEditToolCalls();
+            session.addEditToolCall();
             
             // Try to extract lines modified from the arguments
-            int linesModified = extractLinesModifiedFromArgs(toolCallInfo.arguments());
+            linesModified = extractLinesModifiedFromArgs(args);
             if (linesModified > 0) {
                 totalLinesModifiedCounter.increment(linesModified);
                 userMetrics.addLinesModified(linesModified);
+                session.addLinesModified(linesModified);
+            }
+        }
+        
+        // Create ToolCallLog and add to TurnLog
+        if (turnLog != null) {
+            ToolCallLog toolCallLog = ToolCallLog.builder()
+                    .toolCallId(toolCallId != null ? toolCallId : UUID.randomUUID().toString())
+                    .turnId(turnId)
+                    .name(toolName)
+                    .argsPreview(ToolCallLog.createArgsPreview(args, ARGS_PREVIEW_LENGTH))
+                    .timestamp(LocalDateTime.now())
+                    .status("ok")
+                    .linesModified(linesModified)
+                    .build();
+            turnLog.addToolCall(toolCallLog);
+            if (isEdit) {
+                turnLog.setEditToolCallCount(turnLog.getEditToolCallCount() + 1);
+                turnLog.setLinesModified(turnLog.getLinesModified() + linesModified);
             }
         }
 
-        log.debug("Recorded streaming tool call: {} for user: {}", toolName, userId);
+        log.debug("Recorded streaming tool call: {} for user: {}, turnId: {}", toolName, userId, turnId);
     }
     
     /**
@@ -328,12 +542,16 @@ public class MetricsService {
     /**
      * Record a single tool call
      */
-    private void recordToolCall(String userId, OpenAIToolCall toolCall, UserMetrics userMetrics) {
+    private void recordToolCall(String userId, String turnId, OpenAIToolCall toolCall, 
+                                 UserMetrics userMetrics, SessionInfo session, TurnLog turnLog) {
         String toolName = toolCall.getFunction() != null ? toolCall.getFunction().getName() : "unknown";
+        String toolCallId = toolCall.getId();
+        String args = toolCall.getFunction() != null ? toolCall.getFunction().getArguments() : null;
         
         totalToolCallsCounter.increment();
         userMetrics.incrementToolCalls();
         userMetrics.addToolCall(toolName);
+        session.addToolCall(toolName);
 
         // Record by tool name
         Counter.builder("claude_code.tool_calls.by_name")
@@ -342,20 +560,43 @@ public class MetricsService {
                 .register(meterRegistry)
                 .increment();
 
+        int linesModified = 0;
+        boolean isEdit = isEditTool(toolName);
+        
         // Check if it's an edit tool
-        if (isEditTool(toolName)) {
+        if (isEdit) {
             editToolCallsCounter.increment();
             userMetrics.incrementEditToolCalls();
+            session.addEditToolCall();
             
             // Try to extract lines modified from the arguments
-            int linesModified = extractLinesModified(toolCall);
+            linesModified = extractLinesModified(toolCall);
             if (linesModified > 0) {
                 totalLinesModifiedCounter.increment(linesModified);
                 userMetrics.addLinesModified(linesModified);
+                session.addLinesModified(linesModified);
+            }
+        }
+        
+        // Create ToolCallLog and add to TurnLog
+        if (turnLog != null) {
+            ToolCallLog toolCallLog = ToolCallLog.builder()
+                    .toolCallId(toolCallId != null ? toolCallId : UUID.randomUUID().toString())
+                    .turnId(turnId)
+                    .name(toolName)
+                    .argsPreview(ToolCallLog.createArgsPreview(args, ARGS_PREVIEW_LENGTH))
+                    .timestamp(LocalDateTime.now())
+                    .status("ok")
+                    .linesModified(linesModified)
+                    .build();
+            turnLog.addToolCall(toolCallLog);
+            if (isEdit) {
+                turnLog.setEditToolCallCount(turnLog.getEditToolCallCount() + 1);
+                turnLog.setLinesModified(turnLog.getLinesModified() + linesModified);
             }
         }
 
-        log.debug("Recorded tool call: {} for user: {}", toolName, userId);
+        log.debug("Recorded tool call: {} for user: {}, turnId: {}", toolName, userId, turnId);
     }
 
     /**
@@ -472,6 +713,47 @@ public class MetricsService {
         metrics.setToolCallsByName(toolCallsByName);
 
         return metrics;
+    }
+    
+    /**
+     * Get session manager for accessing session data
+     */
+    public SessionManager getSessionManager() {
+        return sessionManager;
+    }
+    
+    /**
+     * Get turns for a specific user
+     */
+    public List<TurnLog> getTurnsForUser(String userId) {
+        return recentTurns.stream()
+                .filter(t -> userId.equals(t.getUserId()))
+                .toList();
+    }
+    
+    /**
+     * Get turns for a specific session
+     */
+    public List<TurnLog> getTurnsForSession(String sessionId) {
+        return recentTurns.stream()
+                .filter(t -> sessionId.equals(t.getSessionId()))
+                .toList();
+    }
+    
+    /**
+     * Get a specific turn by ID
+     */
+    public TurnLog getTurnById(String turnId) {
+        // Check active turns first
+        TurnLog active = activeTurns.get(turnId);
+        if (active != null) {
+            return active;
+        }
+        // Check recent turns
+        return recentTurns.stream()
+                .filter(t -> turnId.equals(t.getTurnId()))
+                .findFirst()
+                .orElse(null);
     }
 
     /**

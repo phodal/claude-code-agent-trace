@@ -49,13 +49,15 @@ public class OpenAISdkService {
     /**
      * Send non-streaming request using OpenAI SDK
      */
-    public Mono<AnthropicResponse> sendRequest(AnthropicRequest anthropicRequest, String userId, String apiKey) {
+    public Mono<AnthropicResponse> sendRequest(AnthropicRequest anthropicRequest, String userId, String turnId, String apiKey) {
         return Mono.fromCallable(() -> {
+            long startTime = System.currentTimeMillis();
             OpenAIClient client = createClient(apiKey);
             ChatCompletionCreateParams params = buildChatCompletionParams(anthropicRequest);
             
             ChatCompletion completion = client.chat().completions().create(params);
-            metricsService.recordSdkResponse(userId, completion);
+            long latencyMs = System.currentTimeMillis() - startTime;
+            metricsService.recordSdkResponse(userId, turnId, completion, latencyMs);
             
             return convertToAnthropicResponse(completion, anthropicRequest.getModel());
         }).subscribeOn(Schedulers.boundedElastic());
@@ -64,8 +66,9 @@ public class OpenAISdkService {
     /**
      * Send streaming request using OpenAI SDK
      */
-    public Flux<String> sendStreamingRequest(AnthropicRequest anthropicRequest, String userId, String apiKey) {
+    public Flux<String> sendStreamingRequest(AnthropicRequest anthropicRequest, String userId, String turnId, String apiKey) {
         return Flux.<String>create(sink -> {
+            long startTime = System.currentTimeMillis();
             try {
                 OpenAIClient client = createClient(apiKey);
                 ChatCompletionCreateParams params = buildChatCompletionParams(anthropicRequest);
@@ -214,7 +217,8 @@ public class OpenAISdkService {
                     )));
                     sink.next(formatSSE(Map.of("type", "message_stop")));
                     
-                    metricsService.recordStreamingToolCalls(userId, collectedToolCalls);
+                    long latencyMs = System.currentTimeMillis() - startTime;
+                    metricsService.recordStreamingToolCalls(userId, turnId, collectedToolCalls, latencyMs);
                     sink.complete();
                 }
             } catch (Exception e) {

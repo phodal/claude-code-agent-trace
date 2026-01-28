@@ -16,13 +16,37 @@
         .stat-label {
             @apply text-sm text-gray-500 uppercase tracking-wide;
         }
+        .tab-active {
+            @apply border-b-2 border-blue-500 text-blue-600;
+        }
+        .tab-inactive {
+            @apply text-gray-500 hover:text-gray-700;
+        }
+        .tool-badge {
+            @apply px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-800;
+        }
+        .edit-badge {
+            @apply px-2 py-1 text-xs rounded-full bg-green-100 text-green-800;
+        }
+        .error-badge {
+            @apply px-2 py-1 text-xs rounded-full bg-red-100 text-red-800;
+        }
+        .expandable-row {
+            cursor: pointer;
+        }
+        .expandable-row:hover {
+            @apply bg-gray-50;
+        }
+        .tool-call-detail {
+            @apply bg-gray-50 border-l-4 border-blue-200;
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
     <div class="container mx-auto px-4 py-8">
         <header class="mb-8">
             <h1 class="text-4xl font-bold text-gray-800">Claude Code Metrics Dashboard</h1>
-            <p class="text-gray-600 mt-2">Real-time observability for Claude Code usage</p>
+            <p class="text-gray-600 mt-2">Real-time observability for AI Agent usage - User → Session → Message → ToolCalls</p>
         </header>
 
         <!-- Summary Stats -->
@@ -64,178 +88,424 @@
             </div>
         </div>
 
-        <!-- Charts Row -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-            <!-- Tool Calls Chart -->
-            <div class="card">
-                <h2 class="text-xl font-semibold mb-4">Tool Calls Distribution</h2>
-                <canvas id="toolCallsChart" height="300"></canvas>
+        <!-- Tab Navigation -->
+        <div class="card mb-8">
+            <div class="border-b border-gray-200 mb-4">
+                <nav class="-mb-px flex space-x-8">
+                    <button onclick="showTab('turns')" id="tab-turns" class="py-2 px-1 tab-active font-medium text-sm">
+                        Messages (Turns)
+                    </button>
+                    <button onclick="showTab('sessions')" id="tab-sessions" class="py-2 px-1 tab-inactive font-medium text-sm">
+                        Sessions
+                    </button>
+                    <button onclick="showTab('users')" id="tab-users" class="py-2 px-1 tab-inactive font-medium text-sm">
+                        Users
+                    </button>
+                    <button onclick="showTab('tools')" id="tab-tools" class="py-2 px-1 tab-inactive font-medium text-sm">
+                        Tool Distribution
+                    </button>
+                </nav>
             </div>
             
-            <!-- User Activity Chart -->
-            <div class="card">
-                <h2 class="text-xl font-semibold mb-4">User Activity</h2>
-                <canvas id="userActivityChart" height="300"></canvas>
+            <!-- Turns Tab -->
+            <div id="content-turns" class="tab-content">
+                <h2 class="text-xl font-semibold mb-4">Recent Messages (with Tool Calls)</h2>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200" id="turns-table">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Message Preview</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tool Calls</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Edits/Lines</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Latency</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200" id="turns-body">
+                            <tr>
+                                <td colspan="8" class="px-4 py-4 text-center text-gray-500">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Sessions Tab -->
+            <div id="content-sessions" class="tab-content hidden">
+                <h2 class="text-xl font-semibold mb-4">Active Sessions</h2>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200" id="sessions-table">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Session</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Start</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Activity</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Turns</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tool Calls</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg TC/Turn</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lines Modified</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Errors</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200" id="sessions-body">
+                            <tr>
+                                <td colspan="9" class="px-4 py-4 text-center text-gray-500">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Users Tab -->
+            <div id="content-users" class="tab-content hidden">
+                <h2 class="text-xl font-semibold mb-4">User Metrics</h2>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User ID</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requests</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tool Calls</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Edit Tools</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lines Modified</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Input Tokens</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Output Tokens</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr th:each="user : ${userMetrics}">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                    <a th:href="@{'/metrics?user=' + ${user.userId}}" class="text-blue-600 hover:underline" th:text="${user.userId}">-</a>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${user.totalRequests}">0</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${user.totalToolCalls}">0</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-600" th:text="${user.editToolCalls}">0</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-green-600" th:text="${user.linesModified}">0</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-purple-600" th:text="${user.inputTokens}">0</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-orange-600" th:text="${user.outputTokens}">0</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${user.lastSeen}">-</td>
+                            </tr>
+                            <tr th:if="${#lists.isEmpty(userMetrics)}">
+                                <td colspan="8" class="px-6 py-4 text-center text-gray-500">No user data yet</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Tools Tab -->
+            <div id="content-tools" class="tab-content hidden">
+                <h2 class="text-xl font-semibold mb-4">Tool Calls Distribution</h2>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div>
+                        <canvas id="toolCallsChart" height="400"></canvas>
+                    </div>
+                    <div>
+                        <canvas id="userActivityChart" height="400"></canvas>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- User Metrics Table -->
-        <div class="card mb-8">
-            <h2 class="text-xl font-semibold mb-4">User Metrics</h2>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User ID</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requests</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tool Calls</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Edit Tools</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lines Modified</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Input Tokens</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Output Tokens</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        <tr th:each="user : ${userMetrics}">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" th:text="${user.userId}">-</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${user.totalRequests}">0</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${user.totalToolCalls}">0</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-600" th:text="${user.editToolCalls}">0</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-green-600" th:text="${user.linesModified}">0</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-purple-600" th:text="${user.inputTokens}">0</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-orange-600" th:text="${user.outputTokens}">0</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${user.lastSeen}">-</td>
-                        </tr>
-                        <tr th:if="${#lists.isEmpty(userMetrics)}">
-                            <td colspan="8" class="px-6 py-4 text-center text-gray-500">No user data yet</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Recent Requests Table -->
-        <div class="card">
-            <h2 class="text-xl font-semibold mb-4">Recent Requests</h2>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timestamp</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User ID</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Has Tools</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tool Count</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        <tr th:each="req : ${recentRequests}">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${req.timestamp}">-</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" th:text="${req.userId}">-</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${req.model}">-</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                <span th:if="${req.hasTools}" class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Yes</span>
-                                <span th:unless="${req.hasTools}" class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">No</span>
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" th:text="${req.toolCount}">0</td>
-                        </tr>
-                        <tr th:if="${#lists.isEmpty(recentRequests)}">
-                            <td colspan="5" class="px-6 py-4 text-center text-gray-500">No requests yet</td>
-                        </tr>
-                    </tbody>
-                </table>
+        <!-- Tool Call Detail Modal -->
+        <div id="tool-detail-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+                <div class="p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-lg font-semibold">Tool Call Details</h3>
+                        <button onclick="closeModal()" class="text-gray-500 hover:text-gray-700">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="modal-content"></div>
+                </div>
             </div>
         </div>
     </div>
 
     <script th:inline="javascript">
-        // Tool calls data from server
+        // Server-rendered data
         const toolCallsData = /*[[${toolCallsByName}]]*/ {};
-        
-        // User metrics data
         const userMetrics = /*[[${userMetrics}]]*/ [];
         
-        // Initialize tool calls chart
-        const toolCallsCtx = document.getElementById('toolCallsChart').getContext('2d');
-        const toolLabels = Object.keys(toolCallsData);
-        const toolValues = Object.values(toolCallsData);
+        // Tab switching
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('[id^="tab-"]').forEach(el => {
+                el.classList.remove('tab-active');
+                el.classList.add('tab-inactive');
+            });
+            
+            document.getElementById('content-' + tabName).classList.remove('hidden');
+            document.getElementById('tab-' + tabName).classList.remove('tab-inactive');
+            document.getElementById('tab-' + tabName).classList.add('tab-active');
+            
+            if (tabName === 'turns') loadTurns();
+            if (tabName === 'sessions') loadSessions();
+        }
         
-        new Chart(toolCallsCtx, {
-            type: 'bar',
-            data: {
-                labels: toolLabels,
-                datasets: [{
-                    label: 'Tool Calls',
-                    data: toolValues,
-                    backgroundColor: 'rgba(59, 130, 246, 0.5)',
-                    borderColor: 'rgba(59, 130, 246, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true
-                    }
-                }
+        // Load turns data
+        async function loadTurns() {
+            try {
+                const response = await fetch('/metrics/api/turns');
+                const turns = await response.json();
+                renderTurns(turns);
+            } catch (e) {
+                console.error('Failed to load turns:', e);
             }
-        });
+        }
         
-        // Initialize user activity chart
-        const userActivityCtx = document.getElementById('userActivityChart').getContext('2d');
-        const userLabels = userMetrics.map(u => u.userId.substring(0, 15) + (u.userId.length > 15 ? '...' : ''));
-        const userRequests = userMetrics.map(u => u.totalRequests);
-        const userToolCalls = userMetrics.map(u => u.totalToolCalls);
+        function renderTurns(turns) {
+            const tbody = document.getElementById('turns-body');
+            if (turns.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-4 text-center text-gray-500">No messages yet</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = turns.map(turn => `
+                <tr class="expandable-row" onclick="toggleTurnDetail('${turn.turnId}')">
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${formatTime(turn.timestamp)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${truncate(turn.userId, 15)}</td>
+                    <td class="px-4 py-3 text-sm text-gray-500 max-w-xs truncate" title="${escapeHtml(turn.lastUserMessagePreview || '')}">${escapeHtml(turn.lastUserMessagePreview || '-')}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${turn.model || '-'}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">
+                        ${turn.toolCallCount > 0 ? `<span class="tool-badge">${turn.toolCallCount} calls</span>` : '<span class="text-gray-400">-</span>'}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">
+                        ${turn.editToolCallCount > 0 ? `<span class="edit-badge">${turn.editToolCallCount} / ${turn.linesModified} lines</span>` : '<span class="text-gray-400">-</span>'}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${turn.promptTokens || 0} / ${turn.completionTokens || 0}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${turn.latencyMs ? turn.latencyMs + 'ms' : '-'}</td>
+                </tr>
+                <tr id="detail-${turn.turnId}" class="hidden tool-call-detail">
+                    <td colspan="8" class="px-4 py-3">
+                        ${renderToolCalls(turn.toolCalls || [])}
+                    </td>
+                </tr>
+            `).join('');
+        }
         
-        new Chart(userActivityCtx, {
-            type: 'bar',
-            data: {
-                labels: userLabels,
-                datasets: [
-                    {
-                        label: 'Requests',
-                        data: userRequests,
-                        backgroundColor: 'rgba(99, 102, 241, 0.5)',
-                        borderColor: 'rgba(99, 102, 241, 1)',
-                        borderWidth: 1
-                    },
-                    {
+        function renderToolCalls(toolCalls) {
+            if (toolCalls.length === 0) {
+                return '<div class="text-gray-500 text-sm">No tool calls in this message</div>';
+            }
+            
+            return `
+                <div class="space-y-2">
+                    <div class="font-medium text-sm text-gray-700">Tool Calls:</div>
+                    ${toolCalls.map(tc => `
+                        <div class="bg-white p-3 rounded border border-gray-200">
+                            <div class="flex items-center justify-between">
+                                <span class="font-medium text-sm">${tc.name}</span>
+                                <div class="flex items-center space-x-2">
+                                    ${tc.linesModified > 0 ? `<span class="edit-badge">${tc.linesModified} lines</span>` : ''}
+                                    <span class="text-xs text-gray-500">${tc.status}</span>
+                                </div>
+                            </div>
+                            ${tc.argsPreview ? `<div class="mt-1 text-xs text-gray-600 font-mono bg-gray-50 p-2 rounded overflow-x-auto">${escapeHtml(tc.argsPreview)}</div>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+        
+        function toggleTurnDetail(turnId) {
+            const detailRow = document.getElementById('detail-' + turnId);
+            if (detailRow) {
+                detailRow.classList.toggle('hidden');
+            }
+        }
+        
+        // Load sessions data
+        async function loadSessions() {
+            try {
+                const response = await fetch('/metrics/api/sessions');
+                const sessions = await response.json();
+                renderSessions(sessions);
+            } catch (e) {
+                console.error('Failed to load sessions:', e);
+            }
+        }
+        
+        function renderSessions(sessions) {
+            const tbody = document.getElementById('sessions-body');
+            if (sessions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-4 text-center text-gray-500">No sessions yet</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = sessions.map(s => `
+                <tr class="expandable-row" onclick="loadSessionTurns('${s.sessionId}')">
+                    <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-blue-600">${truncate(s.sessionId, 20)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">${truncate(s.userId, 15)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${formatTime(s.startTime)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${formatTime(s.lastActivityTime)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${s.turnCount}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${s.totalToolCalls}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${s.avgToolCallsPerTurn.toFixed(1)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-green-600">${s.totalLinesModified}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">
+                        ${s.errorCount > 0 ? `<span class="error-badge">${s.errorCount}</span>` : '<span class="text-gray-400">0</span>'}
+                    </td>
+                </tr>
+            `).join('');
+        }
+        
+        async function loadSessionTurns(sessionId) {
+            try {
+                const response = await fetch(`/metrics/api/sessions/${sessionId}/turns`);
+                const turns = await response.json();
+                showModal(sessionId, turns);
+            } catch (e) {
+                console.error('Failed to load session turns:', e);
+            }
+        }
+        
+        function showModal(sessionId, turns) {
+            const modal = document.getElementById('tool-detail-modal');
+            const content = document.getElementById('modal-content');
+            
+            content.innerHTML = `
+                <div class="mb-4">
+                    <span class="text-sm text-gray-500">Session:</span>
+                    <span class="font-mono text-sm">${sessionId}</span>
+                </div>
+                <div class="space-y-4">
+                    ${turns.length === 0 ? '<div class="text-gray-500">No messages in this session</div>' : turns.map(turn => `
+                        <div class="border border-gray-200 rounded-lg p-4">
+                            <div class="flex justify-between items-start mb-2">
+                                <div>
+                                    <span class="text-sm text-gray-500">${formatTime(turn.timestamp)}</span>
+                                    <span class="ml-2 text-sm font-medium">${turn.model || 'unknown'}</span>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    ${turn.toolCallCount > 0 ? `<span class="tool-badge">${turn.toolCallCount} tool calls</span>` : ''}
+                                    ${turn.hasError ? '<span class="error-badge">Error</span>' : ''}
+                                </div>
+                            </div>
+                            <div class="text-sm text-gray-700 mb-2">${escapeHtml(turn.lastUserMessagePreview || 'No message preview')}</div>
+                            ${turn.toolCalls && turn.toolCalls.length > 0 ? `
+                                <div class="mt-3 border-t pt-3">
+                                    ${renderToolCalls(turn.toolCalls)}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+        
+        function closeModal() {
+            const modal = document.getElementById('tool-detail-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+        
+        // Utility functions
+        function formatTime(timestamp) {
+            if (!timestamp) return '-';
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+        
+        function truncate(str, len) {
+            if (!str) return '-';
+            return str.length > len ? str.substring(0, len) + '...' : str;
+        }
+        
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        
+        // Initialize charts
+        function initCharts() {
+            const toolCallsCtx = document.getElementById('toolCallsChart').getContext('2d');
+            const toolLabels = Object.keys(toolCallsData);
+            const toolValues = Object.values(toolCallsData);
+            
+            new Chart(toolCallsCtx, {
+                type: 'bar',
+                data: {
+                    labels: toolLabels,
+                    datasets: [{
                         label: 'Tool Calls',
-                        data: userToolCalls,
-                        backgroundColor: 'rgba(34, 197, 94, 0.5)',
-                        borderColor: 'rgba(34, 197, 94, 1)',
+                        data: toolValues,
+                        backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                        borderColor: 'rgba(59, 130, 246, 1)',
                         borderWidth: 1
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'top',
-                    }
+                    }]
                 },
-                scales: {
-                    y: {
-                        beginAtZero: true
-                    }
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: { y: { beginAtZero: true } }
                 }
-            }
+            });
+            
+            const userActivityCtx = document.getElementById('userActivityChart').getContext('2d');
+            const userLabels = userMetrics.map(u => u.userId.substring(0, 15) + (u.userId.length > 15 ? '...' : ''));
+            const userRequests = userMetrics.map(u => u.totalRequests);
+            const userToolCalls = userMetrics.map(u => u.totalToolCalls);
+            
+            new Chart(userActivityCtx, {
+                type: 'bar',
+                data: {
+                    labels: userLabels,
+                    datasets: [
+                        {
+                            label: 'Requests',
+                            data: userRequests,
+                            backgroundColor: 'rgba(99, 102, 241, 0.5)',
+                            borderColor: 'rgba(99, 102, 241, 1)',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Tool Calls',
+                            data: userToolCalls,
+                            backgroundColor: 'rgba(34, 197, 94, 0.5)',
+                            borderColor: 'rgba(34, 197, 94, 1)',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'top' } },
+                    scales: { y: { beginAtZero: true } }
+                }
+            });
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            loadTurns();
+            initCharts();
         });
         
         // Auto-refresh every 10 seconds
-        setTimeout(() => {
-            window.location.reload();
+        setInterval(() => {
+            const activeTab = document.querySelector('.tab-active').id.replace('tab-', '');
+            if (activeTab === 'turns') loadTurns();
+            if (activeTab === 'sessions') loadSessions();
         }, 10000);
+        
+        // Close modal on escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeModal();
+        });
     </script>
 </body>
 </html>

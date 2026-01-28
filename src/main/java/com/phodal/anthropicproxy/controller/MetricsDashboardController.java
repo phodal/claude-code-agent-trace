@@ -1,12 +1,14 @@
 package com.phodal.anthropicproxy.controller;
 
+import com.phodal.anthropicproxy.model.metrics.SessionInfo;
+import com.phodal.anthropicproxy.model.metrics.ToolCallLog;
+import com.phodal.anthropicproxy.model.metrics.TurnLog;
 import com.phodal.anthropicproxy.service.MetricsService;
+import com.phodal.anthropicproxy.service.SessionManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.List;
@@ -104,5 +106,137 @@ public class MetricsDashboardController {
     @ResponseBody
     public List<MetricsService.RequestLog> getRecentRequests() {
         return metricsService.getRecentRequests();
+    }
+    
+    /**
+     * JSON API for recent turns (message-level detail)
+     */
+    @GetMapping("/api/turns")
+    @ResponseBody
+    public List<Map<String, Object>> getRecentTurns() {
+        return metricsService.getRecentTurns().stream()
+                .map(this::turnLogToMap)
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * JSON API for turns by user
+     */
+    @GetMapping("/api/users/{userId}/turns")
+    @ResponseBody
+    public List<Map<String, Object>> getTurnsByUser(@PathVariable String userId) {
+        return metricsService.getTurnsForUser(userId).stream()
+                .map(this::turnLogToMap)
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * JSON API for turns by session
+     */
+    @GetMapping("/api/sessions/{sessionId}/turns")
+    @ResponseBody
+    public List<Map<String, Object>> getTurnsBySession(@PathVariable String sessionId) {
+        return metricsService.getTurnsForSession(sessionId).stream()
+                .map(this::turnLogToMap)
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * JSON API for a specific turn with tool calls
+     */
+    @GetMapping("/api/turns/{turnId}")
+    @ResponseBody
+    public Map<String, Object> getTurnDetail(@PathVariable String turnId) {
+        TurnLog turn = metricsService.getTurnById(turnId);
+        if (turn == null) {
+            return Map.of("error", "Turn not found");
+        }
+        return turnLogToMap(turn);
+    }
+    
+    /**
+     * JSON API for sessions
+     */
+    @GetMapping("/api/sessions")
+    @ResponseBody
+    public List<Map<String, Object>> getRecentSessions() {
+        SessionManager sessionManager = metricsService.getSessionManager();
+        return sessionManager.getRecentSessions(50).stream()
+                .map(this::sessionInfoToMap)
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * JSON API for sessions by user
+     */
+    @GetMapping("/api/users/{userId}/sessions")
+    @ResponseBody
+    public List<Map<String, Object>> getSessionsByUser(@PathVariable String userId) {
+        SessionManager sessionManager = metricsService.getSessionManager();
+        return sessionManager.getUserSessions(userId).stream()
+                .map(this::sessionInfoToMap)
+                .collect(Collectors.toList());
+    }
+    
+    private Map<String, Object> turnLogToMap(TurnLog turn) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("turnId", turn.getTurnId());
+        map.put("userId", turn.getUserId());
+        map.put("sessionId", turn.getSessionId());
+        map.put("timestamp", turn.getTimestamp());
+        map.put("model", turn.getModel());
+        map.put("stream", turn.isStream());
+        map.put("toolsOfferedCount", turn.getToolsOfferedCount());
+        map.put("lastUserMessagePreview", turn.getLastUserMessagePreview());
+        map.put("promptTokens", turn.getPromptTokens());
+        map.put("completionTokens", turn.getCompletionTokens());
+        map.put("latencyMs", turn.getLatencyMs());
+        map.put("toolCallCount", turn.getToolCallCount());
+        map.put("editToolCallCount", turn.getEditToolCallCount());
+        map.put("linesModified", turn.getLinesModified());
+        map.put("hasError", turn.isHasError());
+        map.put("errorMessage", turn.getErrorMessage());
+        
+        // Include tool calls
+        if (turn.getToolCalls() != null) {
+            map.put("toolCalls", turn.getToolCalls().stream()
+                    .map(this::toolCallLogToMap)
+                    .collect(Collectors.toList()));
+        }
+        
+        return map;
+    }
+    
+    private Map<String, Object> toolCallLogToMap(ToolCallLog toolCall) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("toolCallId", toolCall.getToolCallId());
+        map.put("turnId", toolCall.getTurnId());
+        map.put("name", toolCall.getName());
+        map.put("argsPreview", toolCall.getArgsPreview());
+        map.put("timestamp", toolCall.getTimestamp());
+        map.put("durationMs", toolCall.getDurationMs());
+        map.put("status", toolCall.getStatus());
+        map.put("linesModified", toolCall.getLinesModified());
+        map.put("errorMessage", toolCall.getErrorMessage());
+        return map;
+    }
+    
+    private Map<String, Object> sessionInfoToMap(SessionInfo session) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("sessionId", session.getSessionId());
+        map.put("userId", session.getUserId());
+        map.put("startTime", session.getStartTime());
+        map.put("lastActivityTime", session.getLastActivityTime());
+        map.put("turnCount", session.getTurnCount().get());
+        map.put("totalToolCalls", session.getTotalToolCalls().get());
+        map.put("editToolCalls", session.getEditToolCalls().get());
+        map.put("totalLinesModified", session.getTotalLinesModified().get());
+        map.put("totalPromptTokens", session.getTotalPromptTokens().get());
+        map.put("totalCompletionTokens", session.getTotalCompletionTokens().get());
+        map.put("avgToolCallsPerTurn", session.getAvgToolCallsPerTurn());
+        map.put("avgLatencyMs", session.getAvgLatencyMs());
+        map.put("errorCount", session.getErrorCount().get());
+        map.put("toolUsage", session.getToolUsageSnapshot());
+        return map;
     }
 }
