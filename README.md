@@ -1,6 +1,26 @@
 # Anthropic Proxy Java
 
-Anthropic API proxy service that converts Anthropic API requests to OpenAI format, with monitoring metrics and a visual Dashboard.
+<div align="center">
+
+![Java](https://img.shields.io/badge/Java-17+-blue)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.7-brightgreen)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+
+**Anthropic API proxy service that converts Anthropic API requests to OpenAI format, with monitoring metrics and a visual Dashboard.**
+
+</div>
+
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [API Usage](#api-usage)
+- [Monitoring Metrics](#monitoring-metrics)
+- [Docker Deployment](#docker-deployment)
+- [Project Structure](#project-structure)
+- [Tech Stack](#tech-stack)
+- [License](#license)
 
 ## Features
 
@@ -58,6 +78,13 @@ management:
       exposure:
         include: health,info,prometheus,metrics
 ```
+
+### Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `OPENAI_API_KEY` | Anthropic API key | Yes |
+| `SERVER_PORT` | Server port (default: 8080) | No |
 
 ## API Usage
 
@@ -137,29 +164,49 @@ Key metrics:
 - `claude_code.edit_tool_calls.total` - Edit tool call count
 - `claude_code.lines_modified.total` - Total lines modified
 
+## Docker Deployment
+
+```bash
+# Build the image
+docker build -t anthropic-proxy .
+
+# Run the container
+docker run -d \
+  -p 8080:8080 \
+  -e OPENAI_API_KEY=your_api_key \
+  --name anthropic-proxy \
+  anthropic-proxy
+```
+
 ## Project Structure
 
 ```
-src/main/java/com/phodal/anthropicproxy/
-├── AnthropicProxyApplication.java    # Application entry point
-├── config/
-│   ├── JacksonConfig.java            # JSON configuration
-│   └── WebConfig.java                # Web configuration
-├── controller/
-│   ├── AnthropicProxyController.java # API controller
-│   └── MetricsDashboardController.java # Dashboard controller
-+-- model/
-│   ├── anthropic/                    # Anthropic API models
-│   ├── openai/                       # OpenAI API models
-│   └── metrics/                      # Metrics models
-│       ├── SessionInfo.java          # Session information
-│       ├── TurnLog.java              # Turn/Message level metrics
-│       └── ToolCallLog.java          # Tool call details
-└── service/
-    ├── MetricsService.java           # Metrics service
-    ├── OpenAISdkService.java         # OpenAI SDK service
-    ├── SessionManager.java           # Session management
-    └── UserIdentificationService.java # User identification service
+anthropic-proxy-java/
+├── src/main/java/com/phodal/anthropicproxy/
+│   ├── AnthropicProxyApplication.java    # Application entry point
+│   ├── config/
+│   │   ├── JacksonConfig.java            # JSON configuration
+│   │   └── WebConfig.java                # Web configuration
+│   ├── controller/
+│   │   ├── AnthropicProxyController.java # API controller
+│   │   └── MetricsDashboardController.java # Dashboard controller
+│   ├── model/
+│   │   ├── anthropic/                    # Anthropic API models
+│   │   ├── openai/                       # OpenAI API models
+│   │   └── metrics/                      # Metrics models
+│   │       ├── SessionInfo.java          # Session information
+│   │       ├── TurnLog.java              # Turn/Message level metrics
+│   │       └── ToolCallLog.java          # Tool call details
+│   └── service/
+│       ├── MetricsService.java           # Metrics service
+│       ├── OpenAISdkService.java         # OpenAI SDK service
+│       ├── SessionManager.java           # Session management
+│       └── UserIdentificationService.java # User identification service
+├── src/main/resources/
+│   ├── application.yml                   # Application configuration
+│   └── templates/
+│       └── dashboard.html                # Dashboard UI
+└── pom.xml
 ```
 
 ## Tech Stack

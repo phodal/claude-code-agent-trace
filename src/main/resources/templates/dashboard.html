@@ -297,7 +297,7 @@
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${formatTime(turn.timestamp)}</td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${truncate(turn.userId, 15)}</td>
                     <td class="px-4 py-3 text-sm text-gray-500 max-w-xs">
-                        <div class="truncate message-preview-cell" data-full-message="${escapeHtml(turn.lastUserMessagePreview || '')}">${escapeHtml(turn.lastUserMessagePreview || '-')}</div>
+                        <div class="message-preview-cell" data-full-message="${escapeHtml(turn.lastUserMessagePreview || '')}">${escapeHtml(truncate(turn.lastUserMessagePreview || '-', 50))}</div>
                     </td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${turn.model || '-'}</td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm">
