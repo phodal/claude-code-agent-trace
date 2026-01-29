@@ -6,6 +6,7 @@
     <title>Claude Code Metrics Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <style>
         .card {
             @apply bg-white rounded-lg shadow-md p-6;
@@ -39,6 +40,28 @@
         }
         .tool-call-detail {
             @apply bg-gray-50 border-l-4 border-blue-200;
+        }
+        .message-preview-cell {
+            cursor: help;
+        }
+        .message-full-tooltip {
+            display: none;
+            position: fixed;
+            z-index: 9999;
+            background: white;
+            border: 1px solid #d1d5db;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            max-width: 600px;
+            max-height: 500px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.875rem;
+            line-height: 1.5;
+            color: #374151;
         }
     </style>
 </head>
@@ -273,7 +296,9 @@
                 <tr class="expandable-row" onclick="toggleTurnDetail('${turn.turnId}')">
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${formatTime(turn.timestamp)}</td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${truncate(turn.userId, 15)}</td>
-                    <td class="px-4 py-3 text-sm text-gray-500 max-w-xs truncate" title="${escapeHtml(turn.lastUserMessagePreview || '')}">${escapeHtml(turn.lastUserMessagePreview || '-')}</td>
+                    <td class="px-4 py-3 text-sm text-gray-500 max-w-xs">
+                        <div class="truncate message-preview-cell" data-full-message="${escapeHtml(turn.lastUserMessagePreview || '')}">${escapeHtml(turn.lastUserMessagePreview || '-')}</div>
+                    </td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">${turn.model || '-'}</td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm">
                         ${turn.toolCallCount > 0 ? `<span class="tool-badge">${turn.toolCallCount} calls</span>` : '<span class="text-gray-400">-</span>'}
@@ -513,6 +538,53 @@
         // Close modal on escape key
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') closeModal();
+        });
+
+        // jQuery tooltip for message preview
+        $(document).ready(function() {
+            // Create tooltip element
+            const $tooltip = $('<div class="message-full-tooltip"></div>').appendTo('body');
+
+            // Handle hover on message preview cells
+            $(document).on('mouseenter', '.message-preview-cell', function(e) {
+                const fullMessage = $(this).data('full-message');
+                if (fullMessage && fullMessage !== '-') {
+                    $tooltip.text(fullMessage).show();
+                    positionTooltip(e);
+                }
+            });
+
+            $(document).on('mousemove', '.message-preview-cell', function(e) {
+                if ($tooltip.is(':visible')) {
+                    positionTooltip(e);
+                }
+            });
+
+            $(document).on('mouseleave', '.message-preview-cell', function() {
+                $tooltip.hide();
+            });
+
+            function positionTooltip(e) {
+                const tooltipWidth = $tooltip.outerWidth();
+                const tooltipHeight = $tooltip.outerHeight();
+                const windowWidth = $(window).width();
+                const windowHeight = $(window).height();
+
+                let left = e.pageX + 15;
+                let top = e.pageY + 15;
+
+                // Adjust if tooltip goes off right edge
+                if (left + tooltipWidth > windowWidth) {
+                    left = e.pageX - tooltipWidth - 15;
+                }
+
+                // Adjust if tooltip goes off bottom edge
+                if (top + tooltipHeight > windowHeight + $(window).scrollTop()) {
+                    top = e.pageY - tooltipHeight - 15;
+                }
+
+                $tooltip.css({ left: left + 'px', top: top + 'px' });
+            }
         });
     </script>
 </body>
