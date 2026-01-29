@@ -76,20 +76,14 @@ public class OpenAISdkService {
                 String requestModel = anthropicRequest.getModel();
                 String messageId = "msg_" + UUID.randomUUID().toString().replace("-", "");
 
-                // Stream state
-                StringBuilder currentToolArgs = new StringBuilder();
-                String[] currentToolName = {null};
-                String[] currentToolId = {null};
-                int[] currentToolIndex = {-1};
-                int[] currentToolBlockIndex = {-1}; // Anthropic content_block index for current tool_use block
+                // Stream state - match Python proxy behavior
                 boolean[] messageStartSent = {false};
-                boolean[] textBlockStarted = {false};
-                boolean[] textBlockClosed = {false};
                 String[] finalStopReason = {"end_turn"};
                 boolean[] shouldStopReading = {false};
-                StringBuilder accumulatedText = new StringBuilder();
-                boolean[] textSent = {false};
-                int[] lastToolBlockIndex = {0}; // tool blocks start from 1 (index 0 reserved for text)
+                int[] textBlockIndex = {0};
+                int[] toolBlockCounter = {0};
+                // Track tool calls by OpenAI index, matching Python's current_tool_calls dict
+                Map<Integer, ToolCallState> currentToolCalls = new HashMap<>();
                 List<ToolCallInfo> collectedToolCalls = new ArrayList<>();
 
                 try (StreamResponse<ChatCompletionChunk> stream = 
@@ -109,7 +103,6 @@ public class OpenAISdkService {
                             )));
 
                             // Always open an empty text block at index 0 first.
-                            textBlockStarted[0] = true;
                             events.add(formatSSE(Map.of(
                                 "type", "content_block_start",
                                 "index", 0,
@@ -119,143 +112,104 @@ public class OpenAISdkService {
                             events.add(formatSSE(Map.of("type", "ping")));
                         }
 
-                        if (chunk.choices().isEmpty()) return;
+                        if (chunk.choices().isEmpty()) continue;
                         
                         ChatCompletionChunk.Choice choice = chunk.choices().get(0);
                         ChatCompletionChunk.Choice.Delta delta = choice.delta();
 
-                        // Handle text content
+                        // Handle text content - match Python: just send text_delta immediately
                         delta.content().filter(c -> !c.isEmpty()).ifPresent(content -> {
-                            accumulatedText.append(content);
-                            // Stream text deltas only while we're still in the text block.
-                            if (currentToolIndex[0] < 0 && !textBlockClosed[0]) {
-                                textSent[0] = true;
-                                events.add(formatSSE(Map.of(
-                                    "type", "content_block_delta",
-                                    "index", 0,
-                                    "delta", Map.of("type", "text_delta", "text", content)
-                                )));
-                            }
+                            events.add(formatSSE(Map.of(
+                                "type", "content_block_delta",
+                                "index", textBlockIndex[0],
+                                "delta", Map.of("type", "text_delta", "text", content)
+                            )));
                         });
 
-                        // Handle tool calls
+                        // Handle tool calls - match Python behavior exactly
                         delta.toolCalls().ifPresent(toolCalls -> {
                             for (var toolCall : toolCalls) {
-                                int toolIdx = (int) toolCall.index();
+                                int tcIndex = (int) toolCall.index();
                                 
-                                // New tool call starting
-                                toolCall.id().ifPresent(id -> {
-                                    if (toolIdx != currentToolIndex[0]) {
-                                        // First tool call: ensure text block is properly finalized (Python logic)
-                                        if (!textBlockClosed[0]) {
-                                            // If we accumulated text but never emitted it (e.g., first chunk had text+tool_calls),
-                                            // emit the accumulated text before closing.
-                                            if (!textSent[0]) {
-                                                // Claude Code sometimes renders a blank "step" if a tool_use turn has
-                                                // no visible text deltas at all. Python proxy may avoid this depending
-                                                // on chunk shapes; to stabilize UI we emit a single whitespace delta.
-                                                String textToEmit = !accumulatedText.isEmpty() ? accumulatedText.toString() : "\u00A0";
-                                                textSent[0] = true;
+                                // Initialize tool call tracking by index if not exists (Python: current_tool_calls dict)
+                                if (!currentToolCalls.containsKey(tcIndex)) {
+                                    currentToolCalls.put(tcIndex, new ToolCallState());
+                                }
+                                
+                                ToolCallState tcState = currentToolCalls.get(tcIndex);
+                                
+                                // Update tool call ID if provided
+                                toolCall.id().ifPresent(id -> tcState.id = id);
+                                
+                                // Update function name if provided
+                                toolCall.function()
+                                    .flatMap(ChatCompletionChunk.Choice.Delta.ToolCall.Function::name)
+                                    .ifPresent(name -> tcState.name = name);
+                                
+                                // Start content block when we have complete initial data (id and name)
+                                // This matches Python: if (tool_call["id"] and tool_call["name"] and not tool_call["started"])
+                                if (tcState.id != null && tcState.name != null && !tcState.started) {
+                                    toolBlockCounter[0]++;
+                                    int claudeIndex = textBlockIndex[0] + toolBlockCounter[0];
+                                    tcState.claudeIndex = claudeIndex;
+                                    tcState.started = true;
+                                    
+                                    events.add(formatSSE(Map.of(
+                                        "type", "content_block_start",
+                                        "index", claudeIndex,
+                                        "content_block", Map.of(
+                                            "type", "tool_use",
+                                            "id", tcState.id,
+                                            "name", tcState.name,
+                                            "input", Map.of()
+                                        )
+                                    )));
+                                }
+                                
+                                // Handle function arguments - match Python: accumulate and only send when JSON is complete
+                                toolCall.function().flatMap(f -> f.arguments()).ifPresent(args -> {
+                                    if (tcState.started && args != null) {
+                                        tcState.argsBuffer.append(args);
+                                        
+                                        // Try to parse complete JSON and send delta when we have valid JSON
+                                        // This matches Python behavior exactly
+                                        try {
+                                            objectMapper.readTree(tcState.argsBuffer.toString());
+                                            // If parsing succeeds and we haven't sent this JSON yet
+                                            if (!tcState.jsonSent) {
                                                 events.add(formatSSE(Map.of(
                                                     "type", "content_block_delta",
-                                                    "index", 0,
-                                                    "delta", Map.of("type", "text_delta", "text", textToEmit)
+                                                    "index", tcState.claudeIndex,
+                                                    "delta", Map.of("type", "input_json_delta", "partial_json", tcState.argsBuffer.toString())
                                                 )));
+                                                tcState.jsonSent = true;
                                             }
-                                            events.add(formatSSE(Map.of(
-                                                "type", "content_block_stop",
-                                                "index", 0
-                                            )));
-                                            textBlockClosed[0] = true;
+                                        } catch (Exception e) {
+                                            // JSON is incomplete, continue accumulating
                                         }
-                                        
-                                        // Save previous tool call
-                                        if (currentToolIndex[0] >= 0 && currentToolId[0] != null) {
-                                            collectedToolCalls.add(new ToolCallInfo(
-                                                currentToolId[0], currentToolName[0], currentToolArgs.toString()));
-                                            if (currentToolBlockIndex[0] >= 0) {
-                                                events.add(formatSSE(Map.of(
-                                                    "type", "content_block_stop",
-                                                    "index", currentToolBlockIndex[0]
-                                                )));
-                                                currentToolBlockIndex[0] = -1;
-                                            }
-                                        }
-                                        
-                                        currentToolIndex[0] = toolIdx;
-                                        currentToolId[0] = id;
-                                        currentToolName[0] = toolCall.function()
-                                            .flatMap(ChatCompletionChunk.Choice.Delta.ToolCall.Function::name)
-                                            .orElse("");
-                                        currentToolArgs.setLength(0);
-                                        currentToolBlockIndex[0] = ++lastToolBlockIndex[0];
-                                        
-                                        events.add(formatSSE(Map.of(
-                                            "type", "content_block_start",
-                                            "index", currentToolBlockIndex[0],
-                                            "content_block", Map.of(
-                                                "type", "tool_use",
-                                                "id", currentToolId[0],
-                                                "name", currentToolName[0],
-                                                "input", Map.of()
-                                            )
-                                        )));
                                     }
-                                });
-                                
-                                // Accumulate tool arguments
-                                toolCall.function().flatMap(f -> f.arguments()).ifPresent(args -> {
-                                    currentToolArgs.append(args);
-                                    events.add(formatSSE(Map.of(
-                                        "type", "content_block_delta",
-                                        "index", currentToolBlockIndex[0],
-                                        "delta", Map.of("type", "input_json_delta", "partial_json", args)
-                                    )));
                                 });
                             }
                         });
 
-                        // Handle finish reason
+                        // Handle finish reason - match Python behavior
                         choice.finishReason().ifPresent(reason -> {
                             // Map OpenAI finish reason to Anthropic stop_reason
                             String r = reason.toString().toLowerCase();
-                            if (r.contains("tool")) {
-                                finalStopReason[0] = "tool_use";
-                            } else if (r.contains("length")) {
+                            if (r.contains("length")) {
                                 finalStopReason[0] = "max_tokens";
+                            } else if (r.contains("tool")) {
+                                finalStopReason[0] = "tool_use";
                             } else if (r.contains("stop")) {
                                 finalStopReason[0] = "end_turn";
-                            }
-                            if (currentToolIndex[0] >= 0 && currentToolId[0] != null) {
-                                collectedToolCalls.add(new ToolCallInfo(
-                                    currentToolId[0], currentToolName[0], currentToolArgs.toString()));
-                                if (currentToolBlockIndex[0] >= 0) {
-                                    events.add(formatSSE(Map.of(
-                                        "type", "content_block_stop",
-                                        "index", currentToolBlockIndex[0]
-                                    )));
-                                    currentToolBlockIndex[0] = -1;
-                                }
-                                currentToolIndex[0] = -1;
-                            }
-
-                            // If we never closed text block (no tool calls) do it here
-                            if (textBlockStarted[0] && !textBlockClosed[0]) {
-                                events.add(formatSSE(Map.of(
-                                    "type", "content_block_stop",
-                                    "index", 0
-                                )));
-                                textBlockClosed[0] = true;
+                            } else {
+                                finalStopReason[0] = "end_turn";
                             }
                             // Important: stop reading upstream stream immediately.
-                            // Some OpenAI-compatible providers don't close the stream promptly,
-                            // which leaves Claude Code stuck in "loading" even after we've shown content.
                             shouldStopReading[0] = true;
                         });
 
                         if (!events.isEmpty()) {
-                            // Emit as a single chunk to reduce client UI "empty step" renders
-                            // (Claude Code may render intermediate events as blank lines if they arrive separately).
                             sink.next(String.join("", events));
                         }
                         if (shouldStopReading[0]) {
@@ -263,28 +217,25 @@ public class OpenAISdkService {
                         }
                     }
 
-                    // Final events
+                    // Final events - match Python behavior exactly
                     StringBuilder finalOut = new StringBuilder();
 
-                    if (currentToolIndex[0] >= 0 && currentToolId[0] != null) {
-                        collectedToolCalls.add(new ToolCallInfo(
-                            currentToolId[0], currentToolName[0], currentToolArgs.toString()));
-                        if (currentToolBlockIndex[0] >= 0) {
+                    // Close text block first (Python: content_block_stop for text_block_index)
+                    finalOut.append(formatSSE(Map.of(
+                        "type", "content_block_stop",
+                        "index", textBlockIndex[0]
+                    )));
+
+                    // Close all tool blocks and collect tool call info
+                    for (ToolCallState tcState : currentToolCalls.values()) {
+                        if (tcState.started && tcState.claudeIndex != null) {
                             finalOut.append(formatSSE(Map.of(
                                 "type", "content_block_stop",
-                                "index", currentToolBlockIndex[0]
+                                "index", tcState.claudeIndex
                             )));
-                            currentToolBlockIndex[0] = -1;
+                            collectedToolCalls.add(new ToolCallInfo(
+                                tcState.id, tcState.name, tcState.argsBuffer.toString()));
                         }
-                        currentToolIndex[0] = -1;
-                    }
-
-                    // Close text block if it wasn't closed by tool_use
-                    if (textBlockStarted[0] && !textBlockClosed[0]) {
-                        finalOut.append(formatSSE(Map.of(
-                            "type", "content_block_stop",
-                            "index", 0
-                        )));
                     }
                     
                     Map<String, Object> deltaContent = new HashMap<>();
@@ -294,11 +245,10 @@ public class OpenAISdkService {
                     finalOut.append(formatSSE(Map.of(
                         "type", "message_delta",
                         "delta", deltaContent,
-                        "usage", Map.of("output_tokens", 0)
+                        "usage", Map.of("input_tokens", 0, "output_tokens", 0)
                     )));
                     finalOut.append(formatSSE(Map.of("type", "message_stop")));
-                    // Match Anthropic/OpenAI style end marker that many clients expect
-                    finalOut.append("data: [DONE]\n\n");
+                    // Note: Python version does NOT send "data: [DONE]" - removed to match
 
                     if (!finalOut.isEmpty()) {
                         sink.next(finalOut.toString());
@@ -564,4 +514,17 @@ public class OpenAISdkService {
     }
 
     public record ToolCallInfo(String id, String name, String arguments) {}
+
+    /**
+     * Mutable state for tracking tool call accumulation during streaming.
+     * Matches Python's current_tool_calls dict structure.
+     */
+    private static class ToolCallState {
+        String id = null;
+        String name = null;
+        StringBuilder argsBuffer = new StringBuilder();
+        boolean jsonSent = false;
+        Integer claudeIndex = null;
+        boolean started = false;
+    }
 }
