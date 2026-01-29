@@ -18,6 +18,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * Service using official OpenAI Java SDK for API calls
@@ -25,6 +26,9 @@ import java.util.*;
 @Slf4j
 @Service
 public class OpenAISdkService {
+
+    // Pattern to match <think>...</think> tags (including multiline content)
+    private static final Pattern THINK_TAG_PATTERN = Pattern.compile("<think>.*?</think>", Pattern.DOTALL);
 
     private final String baseUrl;
     private final ObjectMapper objectMapper;
@@ -82,6 +86,11 @@ public class OpenAISdkService {
                 boolean[] shouldStopReading = {false};
                 int[] textBlockIndex = {0};
                 int[] toolBlockCounter = {0};
+                boolean[] textBlockHasContent = {false};  // Track if text block received any content
+                boolean[] textBlockClosed = {false};      // Track if text block was already closed
+                // Track <think> tag state for filtering model thinking output
+                boolean[] insideThinkTag = {false};
+                StringBuilder[] thinkBuffer = {new StringBuilder()};
                 // Track tool calls by OpenAI index, matching Python's current_tool_calls dict
                 Map<Integer, ToolCallState> currentToolCalls = new HashMap<>();
                 List<ToolCallInfo> collectedToolCalls = new ArrayList<>();
@@ -117,17 +126,22 @@ public class OpenAISdkService {
                         ChatCompletionChunk.Choice choice = chunk.choices().get(0);
                         ChatCompletionChunk.Choice.Delta delta = choice.delta();
 
-                        // Handle text content - match Python: just send text_delta immediately
+                        // Handle text content - filter out <think>...</think> tags
                         delta.content().filter(c -> !c.isEmpty()).ifPresent(content -> {
-                            events.add(formatSSE(Map.of(
-                                "type", "content_block_delta",
-                                "index", textBlockIndex[0],
-                                "delta", Map.of("type", "text_delta", "text", content)
-                            )));
+                            String filteredContent = filterThinkTags(content, insideThinkTag, thinkBuffer);
+                            if (!filteredContent.isEmpty()) {
+                                textBlockHasContent[0] = true;  // Mark that text block has content
+                                events.add(formatSSE(Map.of(
+                                    "type", "content_block_delta",
+                                    "index", textBlockIndex[0],
+                                    "delta", Map.of("type", "text_delta", "text", filteredContent)
+                                )));
+                            }
                         });
 
                         // Handle tool calls - match Python behavior exactly
-                        delta.toolCalls().ifPresent(toolCalls -> {
+                        // Python checks: if "tool_calls" in delta and delta["tool_calls"]:
+                        delta.toolCalls().filter(tc -> !tc.isEmpty()).ifPresent(toolCalls -> {
                             for (var toolCall : toolCalls) {
                                 int tcIndex = (int) toolCall.index();
                                 
@@ -149,11 +163,31 @@ public class OpenAISdkService {
                                 // Start content block when we have complete initial data (id and name)
                                 // This matches Python: if (tool_call["id"] and tool_call["name"] and not tool_call["started"])
                                 if (tcState.id != null && tcState.name != null && !tcState.started) {
+                                    // Before starting the first tool_use block, close the text block if it's empty
+                                    // This prevents Claude Code CLI from rendering an empty step line
+                                    if (!textBlockClosed[0] && toolBlockCounter[0] == 0) {
+                                        // If text block had no content, send a minimal NBSP to fill it
+                                        // (matches mock stream behavior to avoid empty line rendering)
+                                        if (!textBlockHasContent[0]) {
+                                            events.add(formatSSE(Map.of(
+                                                "type", "content_block_delta",
+                                                "index", textBlockIndex[0],
+                                                "delta", Map.of("type", "text_delta", "text", "\u00A0")
+                                            )));
+                                        }
+                                        // Close the text block before starting tool_use
+                                        events.add(formatSSE(Map.of(
+                                            "type", "content_block_stop",
+                                            "index", textBlockIndex[0]
+                                        )));
+                                        textBlockClosed[0] = true;
+                                    }
+
                                     toolBlockCounter[0]++;
                                     int claudeIndex = textBlockIndex[0] + toolBlockCounter[0];
                                     tcState.claudeIndex = claudeIndex;
                                     tcState.started = true;
-                                    
+
                                     events.add(formatSSE(Map.of(
                                         "type", "content_block_start",
                                         "index", claudeIndex,
@@ -210,7 +244,11 @@ public class OpenAISdkService {
                         });
 
                         if (!events.isEmpty()) {
-                            sink.next(String.join("", events));
+                            String joined = String.join("", events);
+                            if (log.isDebugEnabled()) {
+                                log.debug("Sending SSE events: {}", joined.replace("\n", "\\n"));
+                            }
+                            sink.next(joined);
                         }
                         if (shouldStopReading[0]) {
                             break;
@@ -220,11 +258,13 @@ public class OpenAISdkService {
                     // Final events - match Python behavior exactly
                     StringBuilder finalOut = new StringBuilder();
 
-                    // Close text block first (Python: content_block_stop for text_block_index)
-                    finalOut.append(formatSSE(Map.of(
-                        "type", "content_block_stop",
-                        "index", textBlockIndex[0]
-                    )));
+                    // Close text block first if not already closed (Python: content_block_stop for text_block_index)
+                    if (!textBlockClosed[0]) {
+                        finalOut.append(formatSSE(Map.of(
+                            "type", "content_block_stop",
+                            "index", textBlockIndex[0]
+                        )));
+                    }
 
                     // Close all tool blocks and collect tool call info
                     for (ToolCallState tcState : currentToolCalls.values()) {
@@ -514,6 +554,82 @@ public class OpenAISdkService {
     }
 
     public record ToolCallInfo(String id, String name, String arguments) {}
+
+    /**
+     * Filter out <think>...</think> tags from streaming content.
+     * Handles tags that may span multiple chunks.
+     *
+     * @param content The incoming content chunk
+     * @param insideThinkTag Mutable state tracking if we're inside a think tag
+     * @param buffer Buffer for accumulating partial tags
+     * @return Filtered content with think tags removed
+     */
+    private String filterThinkTags(String content, boolean[] insideThinkTag, StringBuilder[] buffer) {
+        StringBuilder result = new StringBuilder();
+        buffer[0].append(content);
+        String text = buffer[0].toString();
+
+        int i = 0;
+        while (i < text.length()) {
+            if (insideThinkTag[0]) {
+                // Look for closing </think> tag
+                int closeIdx = text.indexOf("</think>", i);
+                if (closeIdx != -1) {
+                    // Found closing tag, skip everything up to and including it
+                    i = closeIdx + "</think>".length();
+                    // Also skip any leading newlines after </think>
+                    while (i < text.length() && (text.charAt(i) == '\n' || text.charAt(i) == '\r')) {
+                        i++;
+                    }
+                    insideThinkTag[0] = false;
+                } else {
+                    // No closing tag yet, might be partial - keep buffering
+                    // Check if we have a partial </think> at the end
+                    String remaining = text.substring(i);
+                    if ("</think>".startsWith(remaining) || remaining.contains("<")) {
+                        // Partial tag, keep in buffer
+                        buffer[0] = new StringBuilder(remaining);
+                        return result.toString();
+                    }
+                    // No partial tag, discard (still inside think)
+                    buffer[0] = new StringBuilder();
+                    return result.toString();
+                }
+            } else {
+                // Look for opening <think> tag
+                int openIdx = text.indexOf("<think>", i);
+                if (openIdx != -1) {
+                    // Output everything before the tag
+                    result.append(text, i, openIdx);
+                    i = openIdx + "<think>".length();
+                    insideThinkTag[0] = true;
+                } else {
+                    // Check for partial <think> at the end
+                    String remaining = text.substring(i);
+                    int partialIdx = -1;
+                    for (int j = 1; j < "<think>".length() && j <= remaining.length(); j++) {
+                        if ("<think>".startsWith(remaining.substring(remaining.length() - j))) {
+                            partialIdx = remaining.length() - j;
+                            break;
+                        }
+                    }
+                    if (partialIdx != -1) {
+                        // Partial tag at end, output up to it and keep rest in buffer
+                        result.append(remaining, 0, partialIdx);
+                        buffer[0] = new StringBuilder(remaining.substring(partialIdx));
+                        return result.toString();
+                    }
+                    // No partial tag, output everything
+                    result.append(remaining);
+                    buffer[0] = new StringBuilder();
+                    return result.toString();
+                }
+            }
+        }
+
+        buffer[0] = new StringBuilder();
+        return result.toString();
+    }
 
     /**
      * Mutable state for tracking tool call accumulation during streaming.

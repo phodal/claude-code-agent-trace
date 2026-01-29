@@ -1,46 +1,46 @@
 # Anthropic Proxy Java
 
-Anthropic API 代理服务，将 Anthropic API 请求转换为 OpenAI 格式，包含监控指标和可视化 Dashboard。
+Anthropic API proxy service that converts Anthropic API requests to OpenAI format, with monitoring metrics and a visual Dashboard.
 
-## 功能特性
+## Features
 
-- **API 代理**：将 Anthropic Messages API 请求转换为 OpenAI Chat Completions 格式
-- **流式支持**：完整的流式响应支持（Server-Sent Events）
-- **工具调用**：支持 Anthropic 工具（Tools/Function Calling）
-- **用户识别**：多种用户识别方式（API Key、Header、IP）
-- **指标监控**：Prometheus 集成 + 可视化 Dashboard
-- **会话跟踪**：细粒度的 Session/Turn/Message 级别指标跟踪
-- **工具调用详情**：记录每次工具调用的参数、耗时和代码修改行数
-- **响应式架构**：基于 Spring WebFlux 的非阻塞架构
+- **API Proxy**: Converts Anthropic Messages API requests to OpenAI Chat Completions format
+- **Streaming Support**: Full streaming response support (Server-Sent Events)
+- **Tool Calling**: Support for Anthropic tools (Tools/Function Calling)
+- **User Identification**: Multiple user identification methods (API Key, Header, IP)
+- **Metrics Monitoring**: Prometheus integration + visual Dashboard
+- **Session Tracking**: Granular Session/Turn/Message level metrics tracking
+- **Tool Call Details**: Records parameters, duration, and code modification lines for each tool call
+- **Reactive Architecture**: Non-blocking architecture based on Spring WebFlux
 
-## 快速开始
+## Quick Start
 
-### 环境要求
+### Requirements
 
 - Java 17+
 - Maven 3.6+
 
-### 构建
+### Build
 
 ```bash
 mvn clean package -DskipTests
 ```
 
-### 运行
+### Run
 
 ```bash
-# 设置 API Key
+# Set API Key
 export OPENAI_API_KEY=your_api_key
 
-# 启动服务
+# Start the service
 java -jar target/anthropic-proxy-1.0.0-SNAPSHOT.jar
 ```
 
-服务将在 `http://localhost:8080` 启动。
+The service will start at `http://localhost:8080`.
 
-## 配置
+## Configuration
 
-在 `src/main/resources/application.yml` 中配置：
+Configure in `src/main/resources/application.yml`:
 
 ```yaml
 server:
@@ -48,9 +48,9 @@ server:
 
 proxy:
   openai:
-    base-url: https://api.anthropic.com/v1  # OpenAI 兼容端点
+    base-url: https://api.anthropic.com/v1  # OpenAI-compatible endpoint
     api-key: ${OPENAI_API_KEY:}             # API Key
-    timeout: 300000                          # 超时时间（毫秒）
+    timeout: 300000                          # Timeout in milliseconds
 
 management:
   endpoints:
@@ -59,9 +59,9 @@ management:
         include: health,info,prometheus,metrics
 ```
 
-## API 使用
+## API Usage
 
-### 发送消息
+### Send a Message
 
 ```bash
 curl -X POST http://localhost:8080/anthropic/v1/messages \
@@ -76,7 +76,7 @@ curl -X POST http://localhost:8080/anthropic/v1/messages \
   }'
 ```
 
-### 流式请求
+### Streaming Request
 
 ```bash
 curl -X POST http://localhost:8080/anthropic/v1/messages \
@@ -93,76 +93,76 @@ curl -X POST http://localhost:8080/anthropic/v1/messages \
   }'
 ```
 
-### 健康检查
+### Health Check
 
 ```bash
 curl http://localhost:8080/anthropic/health
 ```
 
-## 监控指标
+## Monitoring Metrics
 
 ### Dashboard
 
-访问 `http://localhost:8080/dashboard` 查看可视化监控 Dashboard，包含以下标签页：
+Access `http://localhost:8080/dashboard` to view the visual monitoring Dashboard with the following tabs:
 
-- **Messages (Turns)**：查看每条消息的详细信息，包括工具调用、延迟和 token 使用量
-- **Sessions**：用户会话概览，包含累计指标和平均值
-- **Users**：用户级别指标统计
-- **Tool Distribution**：工具调用分布图表
+- **Messages (Turns)**: View details of each message, including tool calls, latency, and token usage
+- **Sessions**: User session overview with cumulative metrics and averages
+- **Users**: User-level metrics statistics
+- **Tool Distribution**: Tool call distribution charts
 
-### API 端点
+### API Endpoints
 
-| 端点 | 描述 |
-|------|------|
-| `GET /metrics/api/turns` | 获取最近的 Turn 列表 |
-| `GET /metrics/api/turns/{turnId}` | 获取特定 Turn 的详细信息 |
-| `GET /metrics/api/sessions` | 获取活跃会话列表 |
-| `GET /metrics/api/sessions/{sessionId}` | 获取会话详情 |
-| `GET /metrics/api/sessions/{sessionId}/turns` | 获取会话中的所有消息 |
-| `GET /metrics/api/users/{userId}/turns` | 获取用户的所有消息 |
-| `GET /metrics/api/users/{userId}/sessions` | 获取用户的所有会话 |
-| `GET /actuator/prometheus` | Prometheus 指标端点 |
+| Endpoint | Description |
+|----------|-------------|
+| `GET /metrics/api/turns` | Get recent Turn list |
+| `GET /metrics/api/turns/{turnId}` | Get details of a specific Turn |
+| `GET /metrics/api/sessions` | Get active session list |
+| `GET /metrics/api/sessions/{sessionId}` | Get session details |
+| `GET /metrics/api/sessions/{sessionId}/turns` | Get all messages in a session |
+| `GET /metrics/api/users/{userId}/turns` | Get all messages for a user |
+| `GET /metrics/api/users/{userId}/sessions` | Get all sessions for a user |
+| `GET /actuator/prometheus` | Prometheus metrics endpoint |
 
-### Prometheus 指标
+### Prometheus Metrics
 
 ```bash
 curl http://localhost:8080/actuator/prometheus
 ```
 
-关键指标：
-- `claude_code.requests.total` - 总请求数
-- `claude_code.requests.by_model` - 按模型统计的请求数
-- `claude_code.tool_calls.total` - 总工具调用次数
-- `claude_code.tool_calls.by_name` - 按名称统计的工具调用次数
-- `claude_code.edit_tool_calls.total` - 编辑工具调用次数
-- `claude_code.lines_modified.total` - 总修改行数
+Key metrics:
+- `claude_code.requests.total` - Total request count
+- `claude_code.requests.by_model` - Request count by model
+- `claude_code.tool_calls.total` - Total tool call count
+- `claude_code.tool_calls.by_name` - Tool call count by name
+- `claude_code.edit_tool_calls.total` - Edit tool call count
+- `claude_code.lines_modified.total` - Total lines modified
 
-## 项目结构
+## Project Structure
 
 ```
 src/main/java/com/phodal/anthropicproxy/
-├── AnthropicProxyApplication.java    # 应用入口
+├── AnthropicProxyApplication.java    # Application entry point
 ├── config/
-│   ├── JacksonConfig.java            # JSON 配置
-│   └── WebConfig.java                # Web 配置
+│   ├── JacksonConfig.java            # JSON configuration
+│   └── WebConfig.java                # Web configuration
 ├── controller/
-│   ├── AnthropicProxyController.java # API 控制器
-│   └── MetricsDashboardController.java # Dashboard 控制器
-├── model/
-│   ├── anthropic/                    # Anthropic API 模型
-│   ├── openai/                       # OpenAI API 模型
-│   └── metrics/                      # 指标模型
-│       ├── SessionInfo.java          # 会话信息
-│       ├── TurnLog.java              # Turn/Message 级别指标
-│       └── ToolCallLog.java          # 工具调用详情
+│   ├── AnthropicProxyController.java # API controller
+│   └── MetricsDashboardController.java # Dashboard controller
++-- model/
+│   ├── anthropic/                    # Anthropic API models
+│   ├── openai/                       # OpenAI API models
+│   └── metrics/                      # Metrics models
+│       ├── SessionInfo.java          # Session information
+│       ├── TurnLog.java              # Turn/Message level metrics
+│       └── ToolCallLog.java          # Tool call details
 └── service/
-    ├── MetricsService.java           # 指标服务
-    ├── OpenAISdkService.java         # OpenAI SDK 服务
-    ├── SessionManager.java           # 会话管理
-    └── UserIdentificationService.java # 用户识别服务
+    ├── MetricsService.java           # Metrics service
+    ├── OpenAISdkService.java         # OpenAI SDK service
+    ├── SessionManager.java           # Session management
+    └── UserIdentificationService.java # User identification service
 ```
 
-## 技术栈
+## Tech Stack
 
 - Spring Boot 3.3.7
 - Spring WebFlux

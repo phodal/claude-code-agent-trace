@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add src/main/java/com/phodal/anthropicproxy/model/metrics/ src/main/java/com/phodal/anthropicproxy/service/SessionManager.java src/main/java/com/phodal/anthropicproxy/AnthropicProxyApplication.java src/main/java/com/phodal/anthropicproxy/controller/AnthropicProxyController.java src/main/java/com/phodal/anthropicproxy/controller/MetricsDashboardController.java src/main/java/com/phodal/anthropicproxy/service/MetricsService.java src/main/java/com/phodal/anthropicproxy/service/OpenAISdkService.java src/main/resources/templates/dashboard.html)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat\\(metrics\\): 添加 Session/Turn 级别的详细指标跟踪\n\n- 新增 SessionManager 管理用户会话生命周期\n- 新增 TurnLog 模型跟踪消息级别指标（latency, tokens, tool calls）\n- 新增 ToolCallLog 模型记录详细工具调用信息\n- 新增 API 端点：/api/turns, /api/sessions, /api/users/{userId}/turns\n- 重构 Dashboard UI 为多标签页（Turns/Sessions/Users/Tools）\n- 支持展开查看每个消息的工具调用详情\n- 为所有请求添加 turnId 追踪和延迟统计\n\nCo-Authored-By: Claude \\(MiniMax-M2.1\\) <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(mvn test -Dtest=\"*ControllerTest\" -q)",
+      "Bash(java -version)",
+      "mcp__ide__getDiagnostics",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(stream\\): 过滤 thinking 标签并优化空文本块处理\n\n- 添加 filterThinkTags 方法移除流式输出中的 <think>...</think> 标签\n- 处理跨 chunk 的标签片段\n- 空文本块使用 NBSP 填充避免空行渲染\n- 工具调用前关闭空文本块，与 Python proxy 行为一致\n\nCo-Authored-By: Claude \\(MiniMax-M2.1\\) <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}
