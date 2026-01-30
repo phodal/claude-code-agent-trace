@@ -7,7 +7,9 @@
       "Bash(java -version)",
       "mcp__ide__getDiagnostics",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(stream\\): 过滤 thinking 标签并优化空文本块处理\n\n- 添加 filterThinkTags 方法移除流式输出中的 <think>...</think> 标签\n- 处理跨 chunk 的标签片段\n- 空文本块使用 NBSP 填充避免空行渲染\n- 工具调用前关闭空文本块，与 Python proxy 行为一致\n\nCo-Authored-By: Claude \\(MiniMax-M2.1\\) <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(stream\\): 过滤 thinking 标签并优化空文本块处理\n\n- 添加 filterThinkTags 方法移除流式输出中的 <think>...</think> 标签\n- 处理跨 chunk 的标签片段\n- 空文本块使用 NBSP 填充避免空行渲染\n- 工具调用前关闭空文本块，与 Python proxy 行为一致\n\nCo-Authored-By: Claude \\(MiniMax-M2.1\\) <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(git push)"
     ]
   }
 }
