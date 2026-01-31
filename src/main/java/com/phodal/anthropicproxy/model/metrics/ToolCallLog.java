@@ -32,7 +32,6 @@ public class ToolCallLog {
         if (args == null || args.isEmpty()) {
             return "";
         }
-        // Remove sensitive content patterns
         String sanitized = args
                 .replaceAll("\"(password|secret|token|key)\"\\s*:\\s*\"[^\"]*\"", "\"$1\":\"[REDACTED]\"");
         

@@ -16,6 +16,7 @@ import com.phodal.anthropicproxy.model.openai.OpenAIToolCall;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -820,6 +821,7 @@ public class MetricsService {
     /**
      * Request log entry
      */
+    @Setter
     @Getter
     public static class RequestLog {
         private LocalDateTime timestamp;
@@ -829,34 +831,12 @@ public class MetricsService {
         private int toolCount;
         private List<String> toolsUsed;
 
-        public void setTimestamp(LocalDateTime timestamp) {
-            this.timestamp = timestamp;
-        }
-
-        public void setUserId(String userId) {
-            this.userId = userId;
-        }
-
-        public void setModel(String model) {
-            this.model = model;
-        }
-
-        public void setHasTools(boolean hasTools) {
-            this.hasTools = hasTools;
-        }
-
-        public void setToolCount(int toolCount) {
-            this.toolCount = toolCount;
-        }
-
-        public void setToolsUsed(List<String> toolsUsed) {
-            this.toolsUsed = toolsUsed;
-        }
     }
 
     /**
      * Aggregated metrics
      */
+    @Setter
     @Getter
     public static class AggregatedMetrics {
         private long totalRequests;
@@ -868,36 +848,5 @@ public class MetricsService {
         private int activeUsers;
         private Map<String, Long> toolCallsByName;
 
-        public void setTotalRequests(long totalRequests) {
-            this.totalRequests = totalRequests;
-        }
-
-        public void setTotalToolCalls(long totalToolCalls) {
-            this.totalToolCalls = totalToolCalls;
-        }
-
-        public void setTotalEditToolCalls(long totalEditToolCalls) {
-            this.totalEditToolCalls = totalEditToolCalls;
-        }
-
-        public void setTotalLinesModified(long totalLinesModified) {
-            this.totalLinesModified = totalLinesModified;
-        }
-
-        public void setTotalInputTokens(long totalInputTokens) {
-            this.totalInputTokens = totalInputTokens;
-        }
-
-        public void setTotalOutputTokens(long totalOutputTokens) {
-            this.totalOutputTokens = totalOutputTokens;
-        }
-
-        public void setActiveUsers(int activeUsers) {
-            this.activeUsers = activeUsers;
-        }
-
-        public void setToolCallsByName(Map<String, Long> toolCallsByName) {
-            this.toolCallsByName = toolCallsByName;
-        }
     }
 }
