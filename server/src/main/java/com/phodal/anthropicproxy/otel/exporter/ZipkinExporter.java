@@ -64,7 +64,8 @@ public class ZipkinExporter implements TraceExporter {
     }
     
     private List<Map<String, Object>> convertToZipkinFormat(Trace trace) {
-        return trace.getSpans().stream()
+        // Use thread-safe snapshot to avoid ConcurrentModificationException
+        return trace.snapshotSpans().stream()
                 .map(this::convertSpanToZipkin)
                 .collect(Collectors.toList());
     }

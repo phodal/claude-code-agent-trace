@@ -64,7 +64,8 @@ public class JaegerExporter implements TraceExporter {
     }
     
     private Map<String, Object> convertToJaegerFormat(Trace trace) {
-        List<Map<String, Object>> spans = trace.getSpans().stream()
+        // Use thread-safe snapshot to avoid ConcurrentModificationException
+        List<Map<String, Object>> spans = trace.snapshotSpans().stream()
                 .map(this::convertSpanToJaeger)
                 .collect(Collectors.toList());
         

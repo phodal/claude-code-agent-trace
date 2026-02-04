@@ -165,11 +165,12 @@ public class TraceService {
         totalToolCallsCounter.increment();
         totalFileEditsCounter.increment();
 
-        int netChange = Math.abs(linesAdded - linesRemoved);
-        totalLinesModifiedCounter.increment(netChange);
+        // Use lines touched (added + removed) instead of net change for more accurate metrics
+        int linesTouched = linesAdded + linesRemoved;
+        totalLinesModifiedCounter.increment(linesTouched);
 
-        // Create range for this edit
-        Range range = Range.of(startLine, endLine);
+        // Create range for this edit - mark as estimated since we derive from tool args, not actual diff
+        Range range = Range.estimated(startLine, endLine);
 
         // Get or create file entry
         FileEditInfo fileEdit = context.fileEdits.computeIfAbsent(filePath, FileEditInfo::new);
@@ -194,7 +195,7 @@ public class TraceService {
         if (metrics != null) {
             metrics.incrementToolCalls();
             metrics.incrementEditToolCalls();
-            metrics.addLinesModified(netChange);
+            metrics.addLinesModified(linesTouched);
             metrics.addToolCall(toolName);
         }
 
@@ -248,12 +249,28 @@ public class TraceService {
 
     /**
      * Record multiple tool calls from streaming completion.
+     * This method also ends the conversation. Use recordStreamingToolCallsOnly()
+     * if you want the Controller to manage conversation lifecycle.
+     * 
+     * @deprecated Use recordStreamingToolCallsOnly() and let Controller manage lifecycle
      */
+    @Deprecated
     public void recordStreamingToolCalls(String userId, String conversationId,
                                           List<OpenAISdkService.ToolCallInfo> toolCalls, long latencyMs) {
+        recordStreamingToolCallsOnly(userId, conversationId, toolCalls, latencyMs);
+        endConversation(conversationId);
+    }
+
+    /**
+     * Record multiple tool calls from streaming completion without ending the conversation.
+     * The Controller is responsible for calling endConversation() separately.
+     * This provides a cleaner separation of concerns.
+     */
+    public void recordStreamingToolCallsOnly(String userId, String conversationId,
+                                              List<OpenAISdkService.ToolCallInfo> toolCalls, long latencyMs) {
         ConversationContext context = activeConversations.get(conversationId);
         if (context == null) {
-            log.warn("No active conversation for ID: {}", conversationId);
+            log.debug("No active conversation for ID: {} (may have been ended already)", conversationId);
             return;
         }
 
@@ -264,9 +281,6 @@ public class TraceService {
                 recordToolCall(conversationId, toolCall.name(), toolCall.arguments());
             }
         }
-
-        // End conversation and create trace
-        endConversation(conversationId);
     }
 
     /**
@@ -291,11 +305,16 @@ public class TraceService {
 
     /**
      * End a conversation and generate the TraceRecord.
+     * This method is idempotent - calling it multiple times is safe.
+     * 
+     * @param conversationId The conversation ID to end
+     * @return The generated TraceRecord, or null if no file edits or already ended
      */
     public TraceRecord endConversation(String conversationId) {
         ConversationContext context = activeConversations.remove(conversationId);
         if (context == null) {
-            log.warn("No active conversation to end: {}", conversationId);
+            // Idempotent: already ended or never existed - this is normal, not a warning
+            log.debug("Conversation already ended or not found: {}", conversationId);
             return null;
         }
 

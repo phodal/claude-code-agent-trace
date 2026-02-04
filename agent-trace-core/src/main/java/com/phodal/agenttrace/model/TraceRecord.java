@@ -123,8 +123,22 @@ public record TraceRecord(
         }
 
         public TraceRecord build() {
-            if (files.isEmpty()) {
+            // Validate required fields
+            if (version == null || version.isBlank()) {
+                throw new IllegalStateException("TraceRecord.version is required and cannot be blank");
+            }
+            if (id == null) {
+                throw new IllegalStateException("TraceRecord.id is required");
+            }
+            if (timestamp == null) {
+                throw new IllegalStateException("TraceRecord.timestamp is required");
+            }
+            if (files == null || files.isEmpty()) {
                 throw new IllegalStateException("TraceRecord must have at least one file entry");
+            }
+            // Validate version format (semver-like: X.Y.Z)
+            if (!version.matches("\\d+\\.\\d+\\.\\d+.*")) {
+                throw new IllegalStateException("TraceRecord.version must be semver format (e.g., '0.1.0'), got: " + version);
             }
             return new TraceRecord(version, id, timestamp, vcs, tool, files, metadata);
         }

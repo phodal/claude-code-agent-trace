@@ -315,7 +315,9 @@ public class OpenAISdkService {
                     }
                     
                     long latencyMs = System.currentTimeMillis() - startTime;
-                    traceService.recordStreamingToolCalls(userId, conversationId, collectedToolCalls, latencyMs);
+                    // Record tool calls but do NOT end conversation here.
+                    // Conversation lifecycle is managed by the Controller.
+                    traceService.recordStreamingToolCallsOnly(userId, conversationId, collectedToolCalls, latencyMs);
                     sink.complete();
                 }
             } catch (Exception e) {

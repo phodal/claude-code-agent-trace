@@ -104,6 +104,7 @@ public class TraceStore {
 
     /**
      * Read all trace records from the store.
+     * For large files, consider using {@link #streamTraces()} instead.
      */
     public List<TraceRecord> readAllTraces() throws IOException {
         if (!Files.exists(tracePath)) {
@@ -129,12 +130,57 @@ public class TraceStore {
     }
 
     /**
+     * Stream trace records from the store.
+     * More memory-efficient than {@link #readAllTraces()} for large files.
+     * 
+     * <p>IMPORTANT: The returned stream must be closed after use (try-with-resources recommended).
+     * Invalid JSON lines are skipped with a warning logged.</p>
+     * 
+     * @return A stream of trace records, or empty stream if file doesn't exist
+     * @throws IOException If the file cannot be read
+     */
+    public Stream<TraceRecord> streamTraces() throws IOException {
+        if (!Files.exists(tracePath)) {
+            return Stream.empty();
+        }
+
+        // Use Files.lines() which is lazy and handles closing
+        return Files.lines(tracePath, StandardCharsets.UTF_8)
+                .filter(line -> !line.isBlank())
+                .map(this::parseTraceLine)
+                .filter(Optional::isPresent)
+                .map(Optional::get);
+    }
+
+    /**
+     * Stream trace records with a filter predicate.
+     * More memory-efficient than loading all traces and filtering.
+     * 
+     * @param filter Predicate to filter traces
+     * @return A filtered stream of trace records
+     * @throws IOException If the file cannot be read
+     */
+    public Stream<TraceRecord> streamTraces(Predicate<TraceRecord> filter) throws IOException {
+        return streamTraces().filter(filter);
+    }
+
+    private Optional<TraceRecord> parseTraceLine(String line) {
+        try {
+            return Optional.of(objectMapper.readValue(line, TraceRecord.class));
+        } catch (Exception e) {
+            log.warn("Failed to parse trace record: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
      * Read traces with a filter predicate.
+     * For large files, consider using {@link #streamTraces(Predicate)} instead.
      */
     public List<TraceRecord> readTraces(Predicate<TraceRecord> filter) throws IOException {
-        return readAllTraces().stream()
-            .filter(filter)
-            .toList();
+        try (Stream<TraceRecord> stream = streamTraces(filter)) {
+            return stream.toList();
+        }
     }
 
     /**
@@ -166,11 +212,26 @@ public class TraceStore {
 
     /**
      * Read the most recent traces.
+     * Note: This needs to read the entire file to get the last N records.
+     * For very large files, consider using an index or reverse-reading approach.
      */
     public List<TraceRecord> readRecentTraces(int limit) throws IOException {
         List<TraceRecord> all = readAllTraces();
         int start = Math.max(0, all.size() - limit);
-        return all.subList(start, all.size());
+        return new ArrayList<>(all.subList(start, all.size()));
+    }
+
+    /**
+     * Count traces matching a predicate without loading all into memory.
+     * 
+     * @param filter Predicate to filter traces
+     * @return Count of matching traces
+     * @throws IOException If the file cannot be read
+     */
+    public long countTraces(Predicate<TraceRecord> filter) throws IOException {
+        try (Stream<TraceRecord> stream = streamTraces(filter)) {
+            return stream.count();
+        }
     }
 
     /**

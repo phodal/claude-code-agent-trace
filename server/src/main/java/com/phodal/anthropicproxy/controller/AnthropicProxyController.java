@@ -7,6 +7,7 @@ import com.phodal.anthropicproxy.otel.model.SpanKind;
 import com.phodal.anthropicproxy.otel.model.SpanStatus;
 import com.phodal.anthropicproxy.otel.model.Trace;
 import com.phodal.anthropicproxy.otel.service.ExporterService;
+import com.phodal.anthropicproxy.otel.service.OtelTraceService;
 import com.phodal.anthropicproxy.service.OpenAISdkService;
 import com.phodal.anthropicproxy.service.TraceService;
 import com.phodal.anthropicproxy.service.UserIdentificationService;
@@ -24,9 +25,9 @@ import java.io.PrintWriter;
 import java.util.Map;
 
 /**
- * Controller to handle Anthropic API proxy requests
- * Uses official OpenAI Java SDK for API calls
- * Records traces using Agent Trace specification
+ * Controller to handle Anthropic API proxy requests.
+ * Uses official OpenAI Java SDK for API calls.
+ * Records traces using Agent Trace specification and OTEL for observability.
  */
 @Slf4j
 @RestController
@@ -37,7 +38,7 @@ public class AnthropicProxyController {
     private final OpenAISdkService sdkService;
     private final TraceService traceService;
     private final UserIdentificationService userIdentificationService;
-    private final com.phodal.anthropicproxy.otel.service.TraceService otelTraceService;
+    private final OtelTraceService otelTraceService;
     private final ExporterService exporterService;
 
     /**
@@ -200,10 +201,9 @@ public class AnthropicProxyController {
                         otelTraceService.completeTrace(traceId);
                         exporterService.exportTrace(trace);
 
-                        // Ensure conversation is ended on non-complete signals (errors/cancel).
-                        if (signalType != SignalType.ON_COMPLETE) {
-                            traceService.endConversation(conversationId);
-                        }
+                        // Always end conversation here - Controller owns the lifecycle.
+                        // This is idempotent, so it's safe even if SDK already recorded tool calls.
+                        traceService.endConversation(conversationId);
                     })
                     .blockLast();
         } catch (Exception e) {

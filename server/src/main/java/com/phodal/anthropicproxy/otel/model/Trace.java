@@ -48,11 +48,18 @@ public class Trace {
     }
     
     /**
-     * Get total trace duration
+     * Get total trace duration.
      */
     public long getTotalDurationMs() {
         Span root = getRootSpan();
         return root != null ? root.getDurationMs() : 0;
+    }
+
+    /**
+     * Get the number of spans in this trace (thread-safe).
+     */
+    public int getSpanCount() {
+        return snapshotSpans().size();
     }
     
     /**
@@ -88,7 +95,13 @@ public class Trace {
         return result;
     }
 
-    private List<Span> snapshotSpans() {
+    /**
+     * Get a thread-safe snapshot of the spans list.
+     * Use this method when iterating over spans to avoid ConcurrentModificationException.
+     * 
+     * @return An immutable copy of the current spans
+     */
+    public List<Span> snapshotSpans() {
         if (spans == null) {
             return List.of();
         }

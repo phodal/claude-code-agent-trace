@@ -1,9 +1,8 @@
 package com.phodal.anthropicproxy.otel.controller;
 
-import com.phodal.anthropicproxy.otel.exporter.TraceExporter;
 import com.phodal.anthropicproxy.otel.model.Trace;
 import com.phodal.anthropicproxy.otel.service.ExporterService;
-import com.phodal.anthropicproxy.otel.service.TraceService;
+import com.phodal.anthropicproxy.otel.service.OtelTraceService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -15,7 +14,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Controller for OTEL trace APIs
+ * Controller for OTEL trace APIs.
+ * Provides endpoints for viewing and exporting OTEL traces.
  */
 @Slf4j
 @RestController
@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class OtelController {
     
-    private final TraceService traceService;
+    private final OtelTraceService traceService;
     private final ExporterService exporterService;
     
     /**
@@ -111,15 +111,17 @@ public class OtelController {
     @GetMapping("/metrics")
     public ResponseEntity<Map<String, Object>> getMetrics() {
         int activeTraces = traceService.getActiveTraces().size();
-        int completedTraces = traceService.getCompletedTraces().size();
+        List<Trace> completed = traceService.getCompletedTraces();
+        int completedTraceCount = completed.size();
         
-        long totalSpans = traceService.getCompletedTraces().stream()
-                .mapToLong(trace -> trace.getSpans().size())
+        // Use thread-safe getSpanCount() instead of getSpans().size()
+        long totalSpans = completed.stream()
+                .mapToLong(Trace::getSpanCount)
                 .sum();
         
         Map<String, Object> metrics = new HashMap<>();
         metrics.put("activeTraces", activeTraces);
-        metrics.put("completedTraces", completedTraces);
+        metrics.put("completedTraces", completedTraceCount);
         metrics.put("totalSpans", totalSpans);
         
         return ResponseEntity.ok(metrics);
@@ -128,7 +130,7 @@ public class OtelController {
     private Map<String, Object> traceToSummary(Trace trace) {
         Map<String, Object> summary = new HashMap<>();
         summary.put("traceId", trace.getTraceId());
-        summary.put("spanCount", trace.getSpans().size());
+        summary.put("spanCount", trace.getSpanCount());
         summary.put("durationMs", trace.getTotalDurationMs());
         
         if (trace.getRootSpan() != null) {
