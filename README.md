@@ -1,4 +1,4 @@
-# Anthropic Proxy Java
+# Agent Trace poc for Claude Code
 
 <div align="center">
 
