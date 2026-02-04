@@ -244,6 +244,42 @@ anthropic-proxy-java/
 - Thymeleaf
 - Lombok
 
+## OTEL Related resources
+
+[Claude Code Docs - Monitoring](https://code.claude.com/docs/en/monitoring-usage)
+
+```bash
+# 1. Enable telemetry
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+
+# 2. Choose exporters (both are optional - configure only what you need)
+export OTEL_METRICS_EXPORTER=otlp       # Options: otlp, prometheus, console
+export OTEL_LOGS_EXPORTER=otlp          # Options: otlp, console
+
+# 3. Configure OTLP endpoint (for OTLP exporter)
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# 4. Set authentication (if required)
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer your-token"
+
+# 5. For debugging: reduce export intervals
+export OTEL_METRIC_EXPORT_INTERVAL=10000  # 10 seconds (default: 60000ms)
+export OTEL_LOGS_EXPORT_INTERVAL=5000     # 5 seconds (default: 5000ms)
+
+# 6. Run Claude Code
+claude
+```
+
+[Bringing Observability to Claude Code: OpenTelemetry in Action](https://signoz.io/blog/claude-code-monitoring-with-opentelemetry/)
+
+- Total token usage & cost → How much are we spending, and where are those tokens going?
+- Sessions, conversations & requests per user → Who’s using Claude regularly, and what does “active usage” really look like?
+- Quota visibility → How close are we to hitting limits (like the 5-hour quota), and do we need to adjust capacity?
+- Performance trends → From command duration over time to request success rate, are developers getting fast, reliable responses?
+- Behavior insights → Which terminals are people using (VS Code, Apple Terminal, etc.), how are decisions distributed (accept vs. reject), and what tool types are most popular?
+- Model distribution → Which Claude variants (Sonnet, Opus, etc.) are driving the most activity?
+
 ## 许可证
 
 MIT
