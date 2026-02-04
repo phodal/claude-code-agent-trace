@@ -34,6 +34,69 @@
 - **响应式架构**：基于 Spring WebFlux 的非阻塞架构
 - **OpenTelemetry 集成**：完整的分布式追踪支持，兼容 Jaeger、Zipkin 等监控工具
 
+## 架构图（拦截 Anthropic 请求 + Metrics / Agent Trace）
+
+```mermaid
+flowchart LR
+  %% ========== Client ==========
+  subgraph Client["Client（Claude Code / Anthropic SDK / 任意调用方）"]
+    C["POST /anthropic/v1/messages\n(Anthropic Messages API shape)"]
+  end
+
+  %% ========== Proxy ==========
+  subgraph Proxy["Anthropic Proxy（Spring Boot）"]
+    AC["AnthropicProxyController\n- /anthropic/v1/messages\n- stream / non-stream"]
+    UID["UserIdentificationService\n- identifyUser()\n- extractApiKey()\n- collectHeaders()"]
+    SDK["OpenAISdkService（OpenAI Java SDK）\n- build OpenAI Chat params\n- upstream stream/non-stream"]
+
+    TS["TraceService（Agent Trace + Micrometer）\n- start/endConversation\n- recordToolCall/fileEdit\n- recentTurns/recentTraces"]
+    Store["TraceStore\n.agent-trace/traces.jsonl"]
+
+    OT["OtelTraceService（OTEL Trace/Span）\n- root span: anthropic.messages\n- child span: api.call / api.stream"]
+    EX["ExporterService\n(Console / Jaeger / Zipkin)"]
+
+    Act["/actuator/prometheus\n(Micrometer metrics)"]
+    Dash["/metrics\n(仪表板：turns / sessions / users / tools)"]
+    OUI["/otel/ui\n(OTEL Trace UI)"]
+  end
+
+  %% ========== Upstream ==========
+  subgraph Upstream["Upstream LLM Provider（OpenAI-compatible endpoint）"]
+    U["Chat Completions API\n(stream / non-stream)"]
+  end
+
+  %% ========== Backends ==========
+  subgraph Obs["Observability Backends"]
+    Prom["Prometheus"]
+    Jaeger["Jaeger"]
+    Zipkin["Zipkin"]
+    Console["Console logs"]
+  end
+
+  %% ========== Main request flow ==========
+  C --> AC
+  AC --> UID
+  AC --> TS
+  AC --> OT
+  AC --> SDK
+  SDK --> U
+
+  %% ========== Agent Trace persistence ==========
+  TS --> Store
+
+  %% ========== OTEL export ==========
+  OT --> EX
+  EX --> Jaeger
+  EX --> Zipkin
+  EX --> Console
+
+  %% ========== Metrics + dashboards ==========
+  TS --> Act
+  Prom <-- "scrape" --> Act
+  Dash <-- "reads" --> TS
+  OUI <-- "reads" --> OT
+```
+
 ## 快速开始
 
 ### 环境要求
