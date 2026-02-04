@@ -4,7 +4,6 @@ import com.phodal.anthropicproxy.otel.model.Span;
 import com.phodal.anthropicproxy.otel.model.SpanKind;
 import com.phodal.anthropicproxy.otel.model.SpanStatus;
 import com.phodal.anthropicproxy.otel.model.Trace;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -19,10 +18,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class TraceService {
     
-    @Getter
     private final Map<String, Trace> activeTraces = new ConcurrentHashMap<>();
     
-    @Getter
     private final List<Trace> completedTraces = Collections.synchronizedList(new ArrayList<>());
     
     private static final int MAX_COMPLETED_TRACES = 1000;
@@ -51,7 +48,6 @@ public class TraceService {
         
         Trace trace = Trace.builder()
                 .traceId(traceId)
-                .spans(new ArrayList<>())
                 .build();
         
         activeTraces.put(traceId, trace);
@@ -72,8 +68,6 @@ public class TraceService {
                 .kind(kind)
                 .startTime(Instant.now())
                 .status(SpanStatus.unset())
-                .attributes(new HashMap<>())
-                .resource(new HashMap<>())
                 .build();
         
         // Add to active trace
@@ -104,11 +98,13 @@ public class TraceService {
     public void completeTrace(String traceId) {
         Trace trace = activeTraces.remove(traceId);
         if (trace != null) {
-            completedTraces.add(trace);
-            
-            // Limit size of completed traces
-            while (completedTraces.size() > MAX_COMPLETED_TRACES) {
-                completedTraces.remove(0);
+            synchronized (completedTraces) {
+                completedTraces.add(trace);
+
+                // Limit size of completed traces
+                while (completedTraces.size() > MAX_COMPLETED_TRACES) {
+                    completedTraces.remove(0);
+                }
             }
             
             log.debug("Completed trace: {} with {} spans", traceId, trace.getSpans().size());
@@ -121,10 +117,14 @@ public class TraceService {
     public Trace getTrace(String traceId) {
         Trace trace = activeTraces.get(traceId);
         if (trace == null) {
-            trace = completedTraces.stream()
-                    .filter(t -> t.getTraceId().equals(traceId))
-                    .findFirst()
-                    .orElse(null);
+            synchronized (completedTraces) {
+                for (Trace t : completedTraces) {
+                    if (t.getTraceId().equals(traceId)) {
+                        trace = t;
+                        break;
+                    }
+                }
+            }
         }
         return trace;
     }
@@ -133,13 +133,28 @@ public class TraceService {
      * Get recent completed traces
      */
     public List<Trace> getRecentTraces(int limit) {
-        int size = completedTraces.size();
-        int fromIndex = Math.max(0, size - limit);
-        
         synchronized (completedTraces) {
+            int size = completedTraces.size();
+            int fromIndex = Math.max(0, size - limit);
             List<Trace> recent = new ArrayList<>(completedTraces.subList(fromIndex, size));
             Collections.reverse(recent);
             return recent;
+        }
+    }
+
+    /**
+     * Expose an unmodifiable view of active traces.
+     */
+    public Map<String, Trace> getActiveTraces() {
+        return Collections.unmodifiableMap(activeTraces);
+    }
+
+    /**
+     * Expose an immutable snapshot of completed traces.
+     */
+    public List<Trace> getCompletedTraces() {
+        synchronized (completedTraces) {
+            return Collections.unmodifiableList(new ArrayList<>(completedTraces));
         }
     }
     
@@ -148,7 +163,9 @@ public class TraceService {
      */
     public void clearAllTraces() {
         activeTraces.clear();
-        completedTraces.clear();
+        synchronized (completedTraces) {
+            completedTraces.clear();
+        }
         log.info("Cleared all traces");
     }
 }

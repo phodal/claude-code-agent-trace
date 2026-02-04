@@ -74,7 +74,10 @@ public class ZipkinExporter implements TraceExporter {
         zipkinSpan.put("traceId", span.getTraceId());
         zipkinSpan.put("id", span.getSpanId());
         zipkinSpan.put("name", span.getName());
-        zipkinSpan.put("timestamp", span.getStartTime().toEpochMilli() * 1000);
+        // Zipkin v2 expects timestamp and duration in microseconds since epoch.
+        // span.getStartTime().toEpochMilli() and span.getDurationMs() are in milliseconds,
+        // so we multiply by 1000 to convert ms → µs as required by the Zipkin specification.
+        zipkinSpan.put("timestamp", span.getStartTime() != null ? span.getStartTime().toEpochMilli() * 1000 : 0);
         zipkinSpan.put("duration", span.getDurationMs() * 1000);
         zipkinSpan.put("kind", mapSpanKindToZipkin(span.getKind()));
         

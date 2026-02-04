@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,14 +23,14 @@ public class Trace {
     private String traceId;
     
     @Builder.Default
-    private List<Span> spans = new ArrayList<>();
+    private List<Span> spans = Collections.synchronizedList(new ArrayList<>());
     
     /**
      * Add a span to this trace
      */
     public void addSpan(Span span) {
         if (spans == null) {
-            spans = new ArrayList<>();
+            spans = Collections.synchronizedList(new ArrayList<>());
         }
         spans.add(span);
     }
@@ -38,10 +39,12 @@ public class Trace {
      * Get root span (span without parent)
      */
     public Span getRootSpan() {
-        return spans.stream()
-                .filter(span -> span.getParentSpanId() == null)
-                .findFirst()
-                .orElse(null);
+        for (Span span : snapshotSpans()) {
+            if (span.getParentSpanId() == null) {
+                return span;
+            }
+        }
+        return null;
     }
     
     /**
@@ -57,8 +60,8 @@ public class Trace {
      */
     public Map<String, Object> toOtelJson() {
         List<Map<String, Object>> spanList = new ArrayList<>();
-        
-        for (Span span : spans) {
+
+        for (Span span : snapshotSpans()) {
             Map<String, Object> spanMap = new HashMap<>();
             spanMap.put("traceId", span.getTraceId() != null ? span.getTraceId() : "");
             spanMap.put("spanId", span.getSpanId() != null ? span.getSpanId() : "");
@@ -83,5 +86,14 @@ public class Trace {
         result.put("traceId", traceId != null ? traceId : "");
         result.put("spans", spanList);
         return result;
+    }
+
+    private List<Span> snapshotSpans() {
+        if (spans == null) {
+            return List.of();
+        }
+        synchronized (spans) {
+            return new ArrayList<>(spans);
+        }
     }
 }

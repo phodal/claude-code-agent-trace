@@ -6,8 +6,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * OTEL Span representation
@@ -27,10 +27,10 @@ public class Span {
     private Instant endTime;
     
     @Builder.Default
-    private Map<String, Object> attributes = new HashMap<>();
+    private Map<String, Object> attributes = new ConcurrentHashMap<>();
     
     @Builder.Default
-    private Map<String, String> resource = new HashMap<>();
+    private Map<String, String> resource = new ConcurrentHashMap<>();
     
     private SpanStatus status;
     
@@ -62,7 +62,7 @@ public class Span {
      */
     public void addAttribute(String key, Object value) {
         if (attributes == null) {
-            attributes = new HashMap<>();
+            attributes = new ConcurrentHashMap<>();
         }
         attributes.put(key, value);
     }
@@ -72,7 +72,7 @@ public class Span {
      */
     public void addResource(String key, String value) {
         if (resource == null) {
-            resource = new HashMap<>();
+            resource = new ConcurrentHashMap<>();
         }
         resource.put(key, value);
     }

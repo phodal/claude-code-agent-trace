@@ -45,6 +45,6 @@ public class ExporterService {
      * Get list of all exporters
      */
     public List<TraceExporter> getExporters() {
-        return exporters;
+        return List.copyOf(exporters);
     }
 }
