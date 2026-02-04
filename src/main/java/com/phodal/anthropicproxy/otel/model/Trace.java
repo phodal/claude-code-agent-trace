@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -58,27 +59,29 @@ public class Trace {
         List<Map<String, Object>> spanList = new ArrayList<>();
         
         for (Span span : spans) {
-            Map<String, Object> spanMap = Map.of(
-                    "traceId", span.getTraceId(),
-                    "spanId", span.getSpanId(),
-                    "parentSpanId", span.getParentSpanId() != null ? span.getParentSpanId() : "",
-                    "name", span.getName(),
-                    "kind", span.getKind().name(),
-                    "startTimeUnixNano", span.getStartTime().toEpochMilli() * 1_000_000,
-                    "endTimeUnixNano", span.getEndTime().toEpochMilli() * 1_000_000,
-                    "attributes", span.getAttributes(),
-                    "status", Map.of(
-                            "code", span.getStatus() != null ? span.getStatus().getCode().name() : "UNSET",
-                            "message", span.getStatus() != null && span.getStatus().getMessage() != null ? 
-                                    span.getStatus().getMessage() : ""
-                    )
-            );
+            Map<String, Object> spanMap = new HashMap<>();
+            spanMap.put("traceId", span.getTraceId() != null ? span.getTraceId() : "");
+            spanMap.put("spanId", span.getSpanId() != null ? span.getSpanId() : "");
+            spanMap.put("parentSpanId", span.getParentSpanId() != null ? span.getParentSpanId() : "");
+            spanMap.put("name", span.getName() != null ? span.getName() : "");
+            spanMap.put("kind", span.getKind() != null ? span.getKind().name() : "INTERNAL");
+            spanMap.put("startTimeUnixNano", span.getStartTime() != null ? span.getStartTime().toEpochMilli() * 1_000_000 : 0);
+            spanMap.put("endTimeUnixNano", span.getEndTime() != null ? span.getEndTime().toEpochMilli() * 1_000_000 : 0);
+            spanMap.put("attributes", span.getAttributes() != null ? span.getAttributes() : Map.of());
+            
+            Map<String, Object> statusMap = new HashMap<>();
+            statusMap.put("code", span.getStatus() != null && span.getStatus().getCode() != null ? 
+                    span.getStatus().getCode().name() : "UNSET");
+            statusMap.put("message", span.getStatus() != null && span.getStatus().getMessage() != null ? 
+                    span.getStatus().getMessage() : "");
+            spanMap.put("status", statusMap);
+            
             spanList.add(spanMap);
         }
         
-        return Map.of(
-                "traceId", traceId,
-                "spans", spanList
-        );
+        Map<String, Object> result = new HashMap<>();
+        result.put("traceId", traceId != null ? traceId : "");
+        result.put("spans", spanList);
+        return result;
     }
 }
