@@ -160,6 +160,12 @@ public class AnthropicProxyController {
                 rootSpan.addAttribute("tool.calls.count", traceService.getToolCallIds(conversationId).size());
                 rootSpan.addAttribute("tool.calls.summary", toolCallsJson);
             }
+            // Optional: attach tool call args preview (may contain sensitive info)
+            String toolCallsDetailsJson = traceService.getToolCallsDetailsJson(conversationId, 50, 4000);
+            if (toolCallsDetailsJson != null && !toolCallsDetailsJson.isBlank()) {
+                apiSpan.addAttribute("tool.calls.details", toolCallsDetailsJson);
+                rootSpan.addAttribute("tool.calls.details", toolCallsDetailsJson);
+            }
 
             // Correlation: tool_use ids emitted by the model in this response (non-streaming)
             List<String> emittedToolUseIds = extractEmittedToolUseIds(response);
@@ -264,6 +270,12 @@ public class AnthropicProxyController {
                             streamSpan.addAttribute("tool.calls.summary", toolCallsJson);
                             rootSpan.addAttribute("tool.calls.count", callCount);
                             rootSpan.addAttribute("tool.calls.summary", toolCallsJson);
+                        }
+                        // Optional: attach tool call args preview (may contain sensitive info)
+                        String toolCallsDetailsJson = traceService.getToolCallsDetailsJson(conversationId, 50, 4000);
+                        if (toolCallsDetailsJson != null && !toolCallsDetailsJson.isBlank()) {
+                            streamSpan.addAttribute("tool.calls.details", toolCallsDetailsJson);
+                            rootSpan.addAttribute("tool.calls.details", toolCallsDetailsJson);
                         }
 
                         // Always end spans and complete/export the OTEL trace to avoid leaks.

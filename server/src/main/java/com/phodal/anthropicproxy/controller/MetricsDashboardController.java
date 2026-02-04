@@ -119,6 +119,7 @@ public class MetricsDashboardController {
             info.emitted = splitIds(str(attrs.get("tool.use_ids.emitted")));
             info.consumed = splitIds(str(attrs.get("tool.use_ids.consumed")));
             info.toolCallsSummaryJson = str(attrs.get("tool.calls.summary"));
+            info.toolCallsDetailsJson = str(attrs.get("tool.calls.details"));
             info.toolCallsCount = intVal(attrs.get("tool.calls.count"));
 
             infoByTraceId.put(info.traceId, info);
@@ -333,7 +334,11 @@ public class MetricsDashboardController {
         m.put("emitted", info.emitted);
         m.put("consumed", info.consumed);
         m.put("toolCallsCount", info.toolCallsCount);
-        m.put("toolCalls", parseToolCallsSummary(info.toolCallsSummaryJson));
+        // Prefer tool call details (with argsPreview) if present; fallback to summary
+        String toolCallsJson = info.toolCallsDetailsJson != null && !info.toolCallsDetailsJson.isBlank()
+                ? info.toolCallsDetailsJson
+                : info.toolCallsSummaryJson;
+        m.put("toolCalls", parseToolCallsSummary(toolCallsJson));
         return m;
     }
 
@@ -382,6 +387,7 @@ public class MetricsDashboardController {
         List<String> consumed = List.of();
         int toolCallsCount;
         String toolCallsSummaryJson;
+        String toolCallsDetailsJson;
     }
 
     private Map<String, Object> traceRecordToDetailMap(TraceRecord trace) {
@@ -434,7 +440,9 @@ public class MetricsDashboardController {
         map.put("userId", trace.metadata() != null ? trace.metadata().get("user_id") : "unknown");
         map.put("model", trace.getModelIds().isEmpty() ? "unknown" : trace.getModelIds().iterator().next());
         map.put("toolCallCount", trace.metadata() != null ? trace.metadata().get("tool_calls") : 0);
-        map.put("editToolCallCount", trace.fileCount());
+        // Prefer true edit tool call count (tool calls that touched a file), fallback to file count for older traces.
+        Object editToolCalls = trace.metadata() != null ? trace.metadata().get("edit_tool_calls") : null;
+        map.put("editToolCallCount", editToolCalls != null ? editToolCalls : trace.fileCount());
         map.put("linesAdded", trace.metadata() != null ? trace.metadata().get("lines_added") : 0);
         map.put("linesRemoved", trace.metadata() != null ? trace.metadata().get("lines_removed") : 0);
         map.put("linesModified", trace.totalLineCount());

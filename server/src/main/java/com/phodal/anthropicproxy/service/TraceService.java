@@ -164,13 +164,25 @@ public class TraceService {
      */
     public void recordFileEdit(String conversationId, String toolCallId, String filePath, int startLine, int endLine,
                                int linesAdded, int linesRemoved, String toolName, String argsPreview) {
+        recordFileEditInternal(conversationId, toolCallId, filePath, startLine, endLine, linesAdded, linesRemoved, toolName, argsPreview, true);
+    }
+
+    /**
+     * Internal file edit recorder that can avoid double-counting total tool calls.
+     * When invoked from {@link #recordToolCall(String, String, String, String)}, total tool calls are already incremented.
+     */
+    private void recordFileEditInternal(String conversationId, String toolCallId, String filePath, int startLine, int endLine,
+                                        int linesAdded, int linesRemoved, String toolName, String argsPreview,
+                                        boolean countAsToolCall) {
         ConversationContext context = activeConversations.get(conversationId);
         if (context == null) {
             log.warn("No active conversation for ID: {}", conversationId);
             return;
         }
 
-        totalToolCallsCounter.increment();
+        if (countAsToolCall) {
+            totalToolCallsCounter.increment();
+        }
         totalFileEditsCounter.increment();
 
         // Use lines touched (added + removed) instead of net change for more accurate metrics
@@ -236,10 +248,12 @@ public class TraceService {
             // Extract file edit info from args
             LinesModifiedInfo linesInfo = extractLinesModifiedFromArgs(args);
             if (linesInfo.filePath != null) {
-                recordFileEdit(conversationId, toolCallId, linesInfo.filePath,
+                // Avoid double-counting total tool calls (already incremented above)
+                recordFileEditInternal(conversationId, toolCallId, linesInfo.filePath,
                         linesInfo.startLine, linesInfo.endLine,
                         linesInfo.linesAdded, linesInfo.linesRemoved,
-                        toolName, createArgsPreview(args));
+                        toolName, createArgsPreview(args),
+                        false);
                 return;
             }
         }
@@ -370,6 +384,60 @@ public class TraceService {
     }
 
     /**
+     * Get a tool call detail JSON string for attaching to OTEL spans / UI.
+     * Includes {@code argsPreview} (already truncated) for debugging.
+     *
+     * <p>Note: This MAY include sensitive information depending on tool usage.
+     * Keep payload size bounded via {@code maxCalls} and {@code maxJsonLength}.</p>
+     *
+     * @param conversationId conversation id
+     * @param maxCalls max calls to include
+     * @param maxJsonLength max json length (will be truncated)
+     * @return JSON string or null if none
+     */
+    public String getToolCallsDetailsJson(String conversationId, int maxCalls, int maxJsonLength) {
+        ConversationContext context = activeConversations.get(conversationId);
+        if (context == null) {
+            return null;
+        }
+
+        List<Map<String, Object>> details;
+        synchronized (context.toolCalls) {
+            details = context.toolCalls.stream()
+                    .limit(Math.max(0, maxCalls))
+                    .map(tc -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        if (tc.toolCallId != null) m.put("id", tc.toolCallId);
+                        if (tc.toolName != null) m.put("name", tc.toolName);
+                        if (tc.filePath != null) m.put("filePath", tc.filePath);
+                        if (tc.startLine > 0) m.put("startLine", tc.startLine);
+                        if (tc.endLine > 0) m.put("endLine", tc.endLine);
+                        if (tc.linesAdded > 0) m.put("linesAdded", tc.linesAdded);
+                        if (tc.linesRemoved > 0) m.put("linesRemoved", tc.linesRemoved);
+                        if (tc.argsPreview != null && !tc.argsPreview.isBlank()) m.put("argsPreview", tc.argsPreview);
+                        if (tc.timestamp != null) m.put("timestamp", tc.timestamp.toString());
+                        return m;
+                    })
+                    .toList();
+        }
+
+        if (details.isEmpty()) {
+            return null;
+        }
+
+        try {
+            String json = objectMapper.writeValueAsString(details);
+            if (maxJsonLength > 0 && json.length() > maxJsonLength) {
+                return json.substring(0, maxJsonLength) + "...";
+            }
+            return json;
+        } catch (Exception e) {
+            log.debug("Failed to serialize tool call details: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Record response tokens and latency.
      */
     public void recordResponse(String conversationId, int promptTokens, int completionTokens, long latencyMs) {
@@ -440,7 +508,17 @@ public class TraceService {
         metadata.put("latency_ms", context.latencyMs);
         metadata.put("prompt_tokens", context.promptTokens);
         metadata.put("completion_tokens", context.completionTokens);
-        metadata.put("tool_calls", context.toolCalls.size());
+        int totalToolCalls;
+        long editToolCalls;
+        synchronized (context.toolCalls) {
+            totalToolCalls = context.toolCalls.size();
+            // Count edit tool calls as those that recorded a file path (i.e., file edits)
+            editToolCalls = context.toolCalls.stream()
+                    .filter(tc -> tc.filePath != null && !tc.filePath.isBlank())
+                    .count();
+        }
+        metadata.put("tool_calls", totalToolCalls);
+        metadata.put("edit_tool_calls", editToolCalls);
         metadata.put("lines_added", context.getTotalLinesAdded());
         metadata.put("lines_removed", context.getTotalLinesRemoved());
         builder.metadata(metadata);
