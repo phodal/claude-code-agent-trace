@@ -10,6 +10,21 @@
 
 </div>
 
+## 一图看懂
+
+```mermaid
+flowchart LR
+  C["Client<br/>(Anthropic Messages API)"] --> P["Anthropic Proxy<br/>/anthropic/v1/messages"]
+  P --> U["Upstream LLM<br/>(OpenAI-compatible)"]
+
+  P --> M["Metrics<br/>Micrometer + /actuator/prometheus"]
+  P --> A["Agent Trace<br/>TraceService + .agent-trace/traces.jsonl"]
+  P --> T["OTEL Trace<br/>spans + exporters<br/>(Console/Jaeger/Zipkin)"]
+
+  M --> D["/metrics Dashboard"]
+  T --> O["/otel/ui"]
+```
+
 ## 目录
 
 - [功能特性](#功能特性)
@@ -40,29 +55,29 @@
 flowchart LR
   %% ========== Client ==========
   subgraph Client["Client（Claude Code / Anthropic SDK / 任意调用方）"]
-    C["POST /anthropic/v1/messages\n(Anthropic Messages API shape)"]
+    C["POST /anthropic/v1/messages<br/>(Anthropic Messages API shape)"]
   end
 
   %% ========== Proxy ==========
   subgraph Proxy["Anthropic Proxy（Spring Boot）"]
-    AC["AnthropicProxyController\n- /anthropic/v1/messages\n- stream / non-stream"]
-    UID["UserIdentificationService\n- identifyUser()\n- extractApiKey()\n- collectHeaders()"]
-    SDK["OpenAISdkService（OpenAI Java SDK）\n- build OpenAI Chat params\n- upstream stream/non-stream"]
+    AC["AnthropicProxyController<br/>- /anthropic/v1/messages<br/>- stream / non-stream"]
+    UID["UserIdentificationService<br/>- identifyUser()<br/>- extractApiKey()<br/>- collectHeaders()"]
+    SDK["OpenAISdkService（OpenAI Java SDK）<br/>- build OpenAI Chat params<br/>- upstream stream/non-stream"]
 
-    TS["TraceService（Agent Trace + Micrometer）\n- start/endConversation\n- recordToolCall/fileEdit\n- recentTurns/recentTraces"]
-    Store["TraceStore\n.agent-trace/traces.jsonl"]
+    TS["TraceService（Agent Trace + Micrometer）<br/>- start/endConversation<br/>- recordToolCall/fileEdit<br/>- recentTurns/recentTraces"]
+    Store["TraceStore<br/>.agent-trace/traces.jsonl"]
 
-    OT["OtelTraceService（OTEL Trace/Span）\n- root span: anthropic.messages\n- child span: api.call / api.stream"]
-    EX["ExporterService\n(Console / Jaeger / Zipkin)"]
+    OT["OtelTraceService（OTEL Trace/Span）<br/>- root span: anthropic.messages<br/>- child span: api.call / api.stream"]
+    EX["ExporterService<br/>(Console / Jaeger / Zipkin)"]
 
-    Act["/actuator/prometheus\n(Micrometer metrics)"]
-    Dash["/metrics\n(仪表板：turns / sessions / users / tools)"]
-    OUI["/otel/ui\n(OTEL Trace UI)"]
+    Act["/actuator/prometheus<br/>(Micrometer metrics)"]
+    Dash["/metrics<br/>(仪表板：turns / sessions / users / tools)"]
+    OUI["/otel/ui<br/>(OTEL Trace UI)"]
   end
 
   %% ========== Upstream ==========
   subgraph Upstream["Upstream LLM Provider（OpenAI-compatible endpoint）"]
-    U["Chat Completions API\n(stream / non-stream)"]
+    U["Chat Completions API<br/>(stream / non-stream)"]
   end
 
   %% ========== Backends ==========
@@ -92,7 +107,7 @@ flowchart LR
 
   %% ========== Metrics + dashboards ==========
   TS --> Act
-  Prom <-- "scrape" --> Act
+  Prom -- "scrape" --> Act
   Dash <-- "reads" --> TS
   OUI <-- "reads" --> OT
 ```
