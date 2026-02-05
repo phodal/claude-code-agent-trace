@@ -579,7 +579,13 @@ public class OpenAISdkService {
             }
         });
 
-        AnthropicUsage usage = completion.usage().map(u -> 
+        Optional<CompletionUsage> completionUsage = completion.usage();
+        // log usage
+        if (completionUsage.isPresent()) {
+            log.info("Usage: {}", completionUsage.get());
+        }
+
+        AnthropicUsage usage = completionUsage.map(u ->
             AnthropicUsage.builder()
                 .inputTokens((int) u.promptTokens())
                 .outputTokens((int) u.completionTokens())

@@ -48,6 +48,7 @@ flowchart LR
 - **工具调用详情**：记录每次工具调用的参数、耗时和代码修改行数
 - **响应式架构**：基于 Spring WebFlux 的非阻塞架构
 - **OpenTelemetry 集成**：完整的分布式追踪支持，兼容 Jaeger、Zipkin 等监控工具
+- **使用量日志**：自动记录每次请求的 Token 使用量（promptTokens/completionTokens）
 
 ## 架构图（拦截 Anthropic 请求 + Metrics / Agent Trace）
 
@@ -243,16 +244,16 @@ curl http://localhost:8080/otel/exporters
 
 ### API 端点
 
-| 端点 | 说明 |
-|----------|-------------|
-| `GET /metrics/api/turns` | 获取最近的 Turn 列表 |
-| `GET /metrics/api/turns/{turnId}` | 获取特定 Turn 的详情 |
-| `GET /metrics/api/sessions` | 获取活跃会话列表 |
-| `GET /metrics/api/sessions/{sessionId}` | 获取会话详情 |
-| `GET /metrics/api/sessions/{sessionId}/turns` | 获取会话中的所有消息 |
-| `GET /metrics/api/users/{userId}/turns` | 获取用户的所有消息 |
-| `GET /metrics/api/users/{userId}/sessions` | 获取用户的所有会话 |
-| `GET /actuator/prometheus` | Prometheus 指标端点 |
+| 端点                                            | 说明              |
+|-----------------------------------------------|-----------------|
+| `GET /metrics/api/turns`                      | 获取最近的 Turn 列表   |
+| `GET /metrics/api/turns/{turnId}`             | 获取特定 Turn 的详情   |
+| `GET /metrics/api/sessions`                   | 获取活跃会话列表        |
+| `GET /metrics/api/sessions/{sessionId}`       | 获取会话详情          |
+| `GET /metrics/api/sessions/{sessionId}/turns` | 获取会话中的所有消息      |
+| `GET /metrics/api/users/{userId}/turns`       | 获取用户的所有消息       |
+| `GET /metrics/api/users/{userId}/sessions`    | 获取用户的所有会话       |
+| `GET /actuator/prometheus`                    | Prometheus 指标端点 |
 
 ### Prometheus 指标
 
