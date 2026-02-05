@@ -12,6 +12,7 @@ import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -28,6 +29,12 @@ public class MetricsDashboardController {
     private final TraceService traceService;
     private final OtelTraceService otelTraceService;
     private final ObjectMapper objectMapper;
+
+    /**
+     * Sessionization fallback when client doesn't provide x-session-id/x-conversation-id.
+     * If a user is idle longer than this gap, start a new session.
+     */
+    private static final Duration SESSION_IDLE_GAP = Duration.ofMinutes(30);
 
     /**
      * Main dashboard page
@@ -372,69 +379,9 @@ public class MetricsDashboardController {
     @ResponseBody
     public List<Map<String, Object>> getRecentSessions() {
         List<Map<String, Object>> turns = traceService.getRecentTurns();
-        
-        // Group turns by userId to create "sessions"
-        Map<String, List<Map<String, Object>>> sessionMap = new LinkedHashMap<>();
-        for (Map<String, Object> turn : turns) {
-            String userId = (String) turn.get("userId");
-            if (userId == null) userId = "unknown";
-            sessionMap.computeIfAbsent(userId, k -> new ArrayList<>()).add(turn);
-        }
-        
-        // Build session summaries
-        List<Map<String, Object>> sessions = new ArrayList<>();
-        for (Map.Entry<String, List<Map<String, Object>>> entry : sessionMap.entrySet()) {
-            String userId = entry.getKey();
-            List<Map<String, Object>> userTurns = entry.getValue();
-            
-            if (userTurns.isEmpty()) continue;
-            
-            // Sort by timestamp
-            userTurns.sort((a, b) -> {
-                String timeA = (String) a.get("timestamp");
-                String timeB = (String) b.get("timestamp");
-                if (timeA == null || timeB == null) return 0;
-                return timeA.compareTo(timeB);
-            });
-            
-            Map<String, Object> first = userTurns.get(0);
-            Map<String, Object> last = userTurns.get(userTurns.size() - 1);
-            
-            // Aggregate metrics
-            long totalToolCalls = 0;
-            long totalLinesModified = 0;
-            long totalPromptTokens = 0;
-            long totalCompletionTokens = 0;
-            int errorCount = 0;
-            
-            for (Map<String, Object> turn : userTurns) {
-                Object tc = turn.get("toolCalls");
-                if (tc instanceof Number) totalToolCalls += ((Number) tc).longValue();
-                Object lm = turn.get("linesModified");
-                if (lm instanceof Number) totalLinesModified += ((Number) lm).longValue();
-                Object pt = turn.get("promptTokens");
-                if (pt instanceof Number) totalPromptTokens += ((Number) pt).longValue();
-                Object ct = turn.get("completionTokens");
-                if (ct instanceof Number) totalCompletionTokens += ((Number) ct).longValue();
-            }
-            
-            Map<String, Object> session = new HashMap<>();
-            session.put("sessionId", userId);  // Use userId as sessionId
-            session.put("userId", userId);
-            session.put("startTime", first.get("timestamp"));
-            session.put("lastActivityTime", last.get("timestamp"));
-            session.put("turnCount", userTurns.size());
-            session.put("totalToolCalls", totalToolCalls);
-            session.put("avgToolCallsPerTurn", userTurns.size() > 0 ? (double) totalToolCalls / userTurns.size() : 0.0);
-            session.put("totalPromptTokens", totalPromptTokens);
-            session.put("totalCompletionTokens", totalCompletionTokens);
-            session.put("totalTokens", totalPromptTokens + totalCompletionTokens);
-            session.put("totalLinesModified", totalLinesModified);
-            session.put("errorCount", errorCount);
-            
-            sessions.add(session);
-        }
-        
+
+        List<Map<String, Object>> sessions = buildSessionsFromTurns(turns);
+
         // Sort by last activity (most recent first)
         sessions.sort((a, b) -> {
             String timeA = (String) a.get("lastActivityTime");
@@ -442,7 +389,7 @@ public class MetricsDashboardController {
             if (timeA == null || timeB == null) return 0;
             return timeB.compareTo(timeA);
         });
-        
+
         return sessions;
     }
 
@@ -454,22 +401,222 @@ public class MetricsDashboardController {
     @ResponseBody
     public List<Map<String, Object>> getSessionTurns(@PathVariable String sessionId) {
         List<Map<String, Object>> allTurns = traceService.getRecentTurns();
-        
-        // Filter turns by userId (sessionId is userId)
-        List<Map<String, Object>> sessionTurns = allTurns.stream()
-                .filter(turn -> {
-                    String userId = (String) turn.get("userId");
-                    return sessionId.equals(userId);
-                })
+
+        // Recompute sessions from the same turn set; then return the matching one.
+        // (Turn list is bounded to MAX_RECENT_TURNS, so this is cheap and deterministic.)
+        Map<String, List<Map<String, Object>>> sessionTurnsById = buildSessionTurnsIndex(allTurns);
+        List<Map<String, Object>> sessionTurns = sessionTurnsById.getOrDefault(sessionId, List.of());
+
+        // Convert raw turn summaries into the same UI-friendly shape as /api/turns
+        // so modal can render tool call details consistently.
+        return sessionTurns.stream()
+                .map(this::turnSummaryToTurnMap)
                 .sorted((a, b) -> {
                     String timeA = (String) a.get("timestamp");
                     String timeB = (String) b.get("timestamp");
                     if (timeA == null || timeB == null) return 0;
-                    return timeA.compareTo(timeB);  // Chronological order
+                    return timeA.compareTo(timeB);
                 })
                 .collect(Collectors.toList());
-        
-        return sessionTurns;
+    }
+
+    /**
+     * Build session summaries from raw turn summaries.
+     *
+     * Rules:
+     * - If turn has clientSessionId (x-session-id/x-conversation-id/x-turn-id), group by (userId, clientSessionId)
+     * - Else, sessionize per user by idle gap (SESSION_IDLE_GAP)
+     */
+    private List<Map<String, Object>> buildSessionsFromTurns(List<Map<String, Object>> turns) {
+        Map<String, List<Map<String, Object>>> byUser = new LinkedHashMap<>();
+        for (Map<String, Object> turn : turns) {
+            String userId = (String) turn.get("userId");
+            if (userId == null || userId.isBlank()) userId = "unknown";
+            byUser.computeIfAbsent(userId, k -> new ArrayList<>()).add(turn);
+        }
+
+        List<Map<String, Object>> sessions = new ArrayList<>();
+
+        for (Map.Entry<String, List<Map<String, Object>>> entry : byUser.entrySet()) {
+            String userId = entry.getKey();
+            List<Map<String, Object>> userTurns = entry.getValue();
+            if (userTurns.isEmpty()) continue;
+
+            // Sort by timestamp ascending
+            userTurns.sort(Comparator.comparing(t -> parseInstantOrNull((String) t.get("timestamp")), Comparator.nullsLast(Comparator.naturalOrder())));
+
+            // 1) turns with explicit clientSessionId → stable grouping
+            Map<String, List<Map<String, Object>>> explicit = new LinkedHashMap<>();
+            List<Map<String, Object>> noExplicit = new ArrayList<>();
+            for (Map<String, Object> t : userTurns) {
+                String cs = (String) t.get("clientSessionId");
+                if (cs != null && !cs.isBlank()) {
+                    explicit.computeIfAbsent(cs, k -> new ArrayList<>()).add(t);
+                } else {
+                    noExplicit.add(t);
+                }
+            }
+
+            for (Map.Entry<String, List<Map<String, Object>>> e : explicit.entrySet()) {
+                String clientSessionId = e.getKey();
+                List<Map<String, Object>> ts = e.getValue();
+                if (ts.isEmpty()) continue;
+                sessions.add(buildSessionSummary(userId, "client", userId + "|" + clientSessionId, clientSessionId, ts));
+            }
+
+            // 2) no explicit id → idle-gap sessionization
+            List<List<Map<String, Object>>> inferred = splitByIdleGap(noExplicit, SESSION_IDLE_GAP);
+            int idx = 0;
+            for (List<Map<String, Object>> ts : inferred) {
+                if (ts.isEmpty()) continue;
+                Map<String, Object> first = ts.get(0);
+                String start = String.valueOf(first.get("timestamp"));
+                String inferredId = userId + "|inferred|" + start + "|" + (idx++);
+                sessions.add(buildSessionSummary(userId, "inferred", inferredId, null, ts));
+            }
+        }
+
+        return sessions;
+    }
+
+    /**
+     * Index sessionId -> turns for lookup.
+     */
+    private Map<String, List<Map<String, Object>>> buildSessionTurnsIndex(List<Map<String, Object>> turns) {
+        Map<String, List<Map<String, Object>>> byUser = new LinkedHashMap<>();
+        for (Map<String, Object> turn : turns) {
+            String userId = (String) turn.get("userId");
+            if (userId == null || userId.isBlank()) userId = "unknown";
+            byUser.computeIfAbsent(userId, k -> new ArrayList<>()).add(turn);
+        }
+
+        Map<String, List<Map<String, Object>>> index = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry : byUser.entrySet()) {
+            String userId = entry.getKey();
+            List<Map<String, Object>> userTurns = entry.getValue();
+            if (userTurns.isEmpty()) continue;
+
+            userTurns.sort(Comparator.comparing(t -> parseInstantOrNull((String) t.get("timestamp")), Comparator.nullsLast(Comparator.naturalOrder())));
+
+            Map<String, List<Map<String, Object>>> explicit = new LinkedHashMap<>();
+            List<Map<String, Object>> noExplicit = new ArrayList<>();
+            for (Map<String, Object> t : userTurns) {
+                String cs = (String) t.get("clientSessionId");
+                if (cs != null && !cs.isBlank()) {
+                    explicit.computeIfAbsent(cs, k -> new ArrayList<>()).add(t);
+                } else {
+                    noExplicit.add(t);
+                }
+            }
+
+            for (Map.Entry<String, List<Map<String, Object>>> e : explicit.entrySet()) {
+                String clientSessionId = e.getKey();
+                String sessionId = userId + "|" + clientSessionId;
+                index.put(sessionId, e.getValue());
+            }
+
+            List<List<Map<String, Object>>> inferred = splitByIdleGap(noExplicit, SESSION_IDLE_GAP);
+            int idx = 0;
+            for (List<Map<String, Object>> ts : inferred) {
+                if (ts.isEmpty()) continue;
+                Map<String, Object> first = ts.get(0);
+                String start = String.valueOf(first.get("timestamp"));
+                String inferredId = userId + "|inferred|" + start + "|" + (idx++);
+                index.put(inferredId, ts);
+            }
+        }
+
+        return index;
+    }
+
+    private Map<String, Object> buildSessionSummary(
+            String userId,
+            String sessionType,
+            String sessionId,
+            String clientSessionId,
+            List<Map<String, Object>> turns
+    ) {
+        // turns should already be time-sorted asc; ensure anyway.
+        List<Map<String, Object>> ts = new ArrayList<>(turns);
+        ts.sort(Comparator.comparing(t -> parseInstantOrNull((String) t.get("timestamp")), Comparator.nullsLast(Comparator.naturalOrder())));
+
+        Map<String, Object> first = ts.get(0);
+        Map<String, Object> last = ts.get(ts.size() - 1);
+
+        long totalToolCalls = 0;
+        long totalLinesModified = 0;
+        long totalPromptTokens = 0;
+        long totalCompletionTokens = 0;
+        int errorCount = 0;
+
+        for (Map<String, Object> turn : ts) {
+            Object tc = turn.get("toolCalls");
+            if (tc instanceof Number) totalToolCalls += ((Number) tc).longValue();
+            Object lm = turn.get("linesModified");
+            if (lm instanceof Number) totalLinesModified += ((Number) lm).longValue();
+            Object pt = turn.get("promptTokens");
+            if (pt instanceof Number) totalPromptTokens += ((Number) pt).longValue();
+            Object ct = turn.get("completionTokens");
+            if (ct instanceof Number) totalCompletionTokens += ((Number) ct).longValue();
+        }
+
+        Map<String, Object> session = new HashMap<>();
+        session.put("sessionId", sessionId);
+        session.put("sessionType", sessionType);
+        if (clientSessionId != null) session.put("clientSessionId", clientSessionId);
+        session.put("userId", userId);
+        session.put("startTime", first.get("timestamp"));
+        session.put("lastActivityTime", last.get("timestamp"));
+        session.put("turnCount", ts.size());
+        session.put("totalToolCalls", totalToolCalls);
+        session.put("avgToolCallsPerTurn", ts.size() > 0 ? (double) totalToolCalls / ts.size() : 0.0);
+        session.put("totalPromptTokens", totalPromptTokens);
+        session.put("totalCompletionTokens", totalCompletionTokens);
+        session.put("totalTokens", totalPromptTokens + totalCompletionTokens);
+        session.put("totalLinesModified", totalLinesModified);
+        session.put("errorCount", errorCount);
+        return session;
+    }
+
+    private static List<List<Map<String, Object>>> splitByIdleGap(List<Map<String, Object>> turns, Duration gap) {
+        if (turns == null || turns.isEmpty()) return List.of();
+
+        // Ensure time-sorted asc
+        List<Map<String, Object>> ordered = new ArrayList<>(turns);
+        ordered.sort(Comparator.comparing(t -> parseInstantOrNull((String) t.get("timestamp")), Comparator.nullsLast(Comparator.naturalOrder())));
+
+        List<List<Map<String, Object>>> sessions = new ArrayList<>();
+        List<Map<String, Object>> cur = new ArrayList<>();
+        Instant prev = null;
+
+        for (Map<String, Object> t : ordered) {
+            Instant now = parseInstantOrNull((String) t.get("timestamp"));
+            if (now == null) {
+                // unknown time: keep in current session bucket
+                cur.add(t);
+                continue;
+            }
+            if (prev != null && gap != null && !cur.isEmpty()) {
+                Duration delta = Duration.between(prev, now);
+                if (!delta.isNegative() && delta.compareTo(gap) > 0) {
+                    sessions.add(cur);
+                    cur = new ArrayList<>();
+                }
+            }
+            cur.add(t);
+            prev = now;
+        }
+        if (!cur.isEmpty()) sessions.add(cur);
+        return sessions;
+    }
+
+    private static Instant parseInstantOrNull(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return Instant.parse(s);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

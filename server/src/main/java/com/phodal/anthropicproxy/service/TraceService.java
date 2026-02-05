@@ -131,12 +131,18 @@ public class TraceService {
         String model = request.getModel();
         String normalizedModelId = ModelIdNormalizer.normalize(model);
 
+        // Claude Code / client correlation: prefer stable session/conversation ids if present.
+        String clientSessionId = extractClientSessionId(headers, request != null ? request.getMetadata() : null);
+        String clientRequestId = extractClientRequestId(headers, request != null ? request.getMetadata() : null);
+
         ConversationContext context = ConversationContext.builder()
                 .conversationId(conversationId)
                 .userId(userId)
                 .model(model)
                 .normalizedModelId(normalizedModelId)
                 .startTime(Instant.now())
+                .clientSessionId(clientSessionId != null && !clientSessionId.isBlank() ? clientSessionId.trim() : null)
+                .clientRequestId(clientRequestId != null && !clientRequestId.isBlank() ? clientRequestId.trim() : null)
                 // Prefer last user message, but fall back to any textual message/system
                 // so the dashboard doesn't show empty previews for some clients.
                 .lastUserMessage(extractBestEffortPrompt(request))
@@ -520,6 +526,8 @@ public class TraceService {
         turnSummary.put("userId", context.userId);
         turnSummary.put("model", context.model);
         turnSummary.put("normalizedModelId", context.normalizedModelId);
+        if (context.clientSessionId != null) turnSummary.put("clientSessionId", context.clientSessionId);
+        if (context.clientRequestId != null) turnSummary.put("clientRequestId", context.clientRequestId);
         turnSummary.put("lastUserMessage", truncate(context.lastUserMessage, LAST_USER_MESSAGE_MAX_LENGTH));
         turnSummary.put("lastUserMessagePreview", truncate(context.lastUserMessage, 100));
         turnSummary.put("latencyMs", context.latencyMs);
@@ -569,6 +577,8 @@ public class TraceService {
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("conversation_id", conversationId);
         metadata.put("user_id", context.userId);
+        if (context.clientSessionId != null) metadata.put("client_session_id", context.clientSessionId);
+        if (context.clientRequestId != null) metadata.put("client_request_id", context.clientRequestId);
         metadata.put("last_user_message", truncate(context.lastUserMessage, LAST_USER_MESSAGE_MAX_LENGTH));
         metadata.put("latency_ms", context.latencyMs);
         metadata.put("prompt_tokens", context.promptTokens);
@@ -706,6 +716,152 @@ public class TraceService {
                 userId.length() > 6 ? userId.substring(0, 6) : userId,
                 System.currentTimeMillis(),
                 UUID.randomUUID().toString().substring(0, 6));
+    }
+
+    private static String getHeaderIgnoreCase(Map<String, String> headers, String key) {
+        if (headers == null || headers.isEmpty() || key == null) {
+            return null;
+        }
+        for (Map.Entry<String, String> e : headers.entrySet()) {
+            if (e.getKey() != null && e.getKey().equalsIgnoreCase(key)) {
+                return e.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Try to extract a stable "session" identifier from Claude Code (or similar clients).
+     *
+     * Sources (in priority order):
+     * - Explicit correlation headers (x-session-id/x-conversation-id/x-turn-id + Claude Code variants)
+     * - Parsed JSON from "anthropic-metadata" header (if present)
+     * - Request body "metadata" field (if present)
+     */
+    private String extractClientSessionId(Map<String, String> headers, Object requestMetadata) {
+        // 1) Headers (strongest: explicit and intended for correlation)
+        String id = firstHeaderIgnoreCase(headers,
+                "x-session-id",
+                "x-claude-session-id",
+                "x-claude-code-session-id",
+                "x-conversation-id",
+                "x-claude-conversation-id",
+                "x-claude-code-conversation-id",
+                "x-turn-id",
+                "x-claude-turn-id",
+                "x-claude-code-turn-id");
+        id = normalizeId(id);
+        if (id != null) return id;
+
+        // 2) Claude/Anthropic metadata header (JSON)
+        String metaHeader = getHeaderIgnoreCase(headers, "anthropic-metadata");
+        id = normalizeId(extractIdFromJson(metaHeader,
+                "session_id", "sessionId",
+                "conversation_id", "conversationId",
+                "thread_id", "threadId",
+                "turn_id", "turnId"));
+        if (id != null) return id;
+
+        // 3) Request body metadata field
+        id = normalizeId(extractIdFromMetadataObject(requestMetadata,
+                "session_id", "sessionId",
+                "conversation_id", "conversationId",
+                "thread_id", "threadId",
+                "turn_id", "turnId"));
+        return id;
+    }
+
+    /**
+     * Extract a request-scoped correlation id for debugging/dedup.
+     * Note: this is NOT a session id and should not be used for sessionization.
+     */
+    private String extractClientRequestId(Map<String, String> headers, Object requestMetadata) {
+        String id = firstHeaderIgnoreCase(headers,
+                "x-request-id",
+                "x-correlation-id",
+                "x-claude-request-id",
+                "x-claude-code-request-id");
+        id = normalizeId(id);
+        if (id != null) return id;
+
+        // Optionally read from metadata/header if provided
+        String metaHeader = getHeaderIgnoreCase(headers, "anthropic-metadata");
+        id = normalizeId(extractIdFromJson(metaHeader,
+                "request_id", "requestId",
+                "correlation_id", "correlationId"));
+        if (id != null) return id;
+
+        return normalizeId(extractIdFromMetadataObject(requestMetadata,
+                "request_id", "requestId",
+                "correlation_id", "correlationId"));
+    }
+
+    private String firstHeaderIgnoreCase(Map<String, String> headers, String... keys) {
+        if (keys == null) return null;
+        for (String k : keys) {
+            String v = getHeaderIgnoreCase(headers, k);
+            if (v != null && !v.isBlank()) return v;
+        }
+        return null;
+    }
+
+    /**
+     * Normalize correlation ids to keep storage + UI sane.
+     */
+    private static String normalizeId(String id) {
+        if (id == null) return null;
+        String s = id.trim();
+        if (s.isEmpty()) return null;
+        // Avoid massive values accidentally ending up as session ids
+        int max = 200;
+        if (s.length() > max) {
+            return s.substring(0, max) + "...";
+        }
+        return s;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractIdFromMetadataObject(Object metadata, String... keys) {
+        if (metadata == null || keys == null || keys.length == 0) return null;
+
+        try {
+            if (metadata instanceof Map<?, ?> map) {
+                for (String k : keys) {
+                    Object v = ((Map<Object, Object>) map).get(k);
+                    if (v != null) {
+                        String s = String.valueOf(v).trim();
+                        if (!s.isBlank()) return s;
+                    }
+                }
+                return null;
+            }
+
+            if (metadata instanceof String s) {
+                return extractIdFromJson(s, keys);
+            }
+        } catch (Exception e) {
+            // best-effort only
+        }
+
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractIdFromJson(String json, String... keys) {
+        if (json == null || json.isBlank() || keys == null || keys.length == 0) return null;
+        try {
+            Map<String, Object> map = objectMapper.readValue(json, Map.class);
+            for (String k : keys) {
+                Object v = map.get(k);
+                if (v != null) {
+                    String s = String.valueOf(v).trim();
+                    if (!s.isBlank()) return s;
+                }
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+        return null;
     }
 
     private void addRecentTrace(TraceRecord trace) {
@@ -911,6 +1067,8 @@ public class TraceService {
         private String model;
         private String normalizedModelId;
         private Instant startTime;
+        private String clientSessionId;
+        private String clientRequestId;
         private String lastUserMessage;
         private boolean stream;
         private int promptTokens;

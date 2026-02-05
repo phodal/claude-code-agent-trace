@@ -690,7 +690,7 @@
         
         async function loadSessionTurns(sessionId) {
             try {
-                const response = await fetch(`/metrics/api/sessions/${sessionId}/turns`);
+                const response = await fetch(`/metrics/api/sessions/${encodeURIComponent(sessionId)}/turns`);
                 const turns = await response.json();
                 showModal(sessionId, turns);
             } catch (e) {
