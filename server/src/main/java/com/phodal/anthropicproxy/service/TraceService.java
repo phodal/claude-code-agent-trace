@@ -9,6 +9,7 @@ import com.phodal.anthropicproxy.model.anthropic.AnthropicMessage;
 import com.phodal.anthropicproxy.model.anthropic.AnthropicRequest;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.Builder;
 import lombok.Data;
 import lombok.Getter;
@@ -24,6 +25,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -37,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class TraceService {
 
     private final ObjectMapper objectMapper;
+    @Getter
     private final MeterRegistry meterRegistry;
     private final TraceStore traceStore;
     private final Path workspacePath;
@@ -45,7 +48,11 @@ public class TraceService {
     private final Counter totalRequestsCounter;
     private final Counter totalToolCallsCounter;
     private final Counter totalFileEditsCounter;
-    private final Counter totalLinesModifiedCounter;
+    private final Counter totalLinesTouchedCounter;  // renamed for clarity (estimated)
+    private final Counter totalInputTokensCounter;
+    private final Counter totalOutputTokensCounter;
+    private final Counter authFailuresCounter;
+    private final Counter sessionsCounter;
 
     // Active conversations (conversationId -> ConversationContext)
     private final Map<String, ConversationContext> activeConversations = new ConcurrentHashMap<>();
@@ -91,20 +98,93 @@ public class TraceService {
         this.traceStore = new TraceStore(this.workspacePath);
 
         this.totalRequestsCounter = Counter.builder("agent_trace.requests.total")
-                .description("Total number of requests")
+                .description("Total number of requests (after auth)")
                 .register(meterRegistry);
 
         this.totalToolCallsCounter = Counter.builder("agent_trace.tool_calls.total")
-                .description("Total number of tool calls")
+                .description("Total number of tool calls (including edit tools)")
                 .register(meterRegistry);
 
         this.totalFileEditsCounter = Counter.builder("agent_trace.file_edits.total")
                 .description("Total number of file edit operations")
                 .register(meterRegistry);
 
-        this.totalLinesModifiedCounter = Counter.builder("agent_trace.lines_modified.total")
-                .description("Total number of lines modified")
+        this.totalLinesTouchedCounter = Counter.builder("agent_trace.lines_touched.estimated.total")
+                .description("Estimated lines touched (added + removed, derived from tool args)")
                 .register(meterRegistry);
+
+        this.totalInputTokensCounter = Counter.builder("agent_trace.tokens.input.total")
+                .description("Total input/prompt tokens")
+                .register(meterRegistry);
+
+        this.totalOutputTokensCounter = Counter.builder("agent_trace.tokens.output.total")
+                .description("Total output/completion tokens")
+                .register(meterRegistry);
+
+        this.authFailuresCounter = Counter.builder("agent_trace.auth.failures.total")
+                .description("Total authentication failures (missing/invalid API key)")
+                .register(meterRegistry);
+
+        this.sessionsCounter = Counter.builder("agent_trace.sessions.total")
+                .description("Total sessions started")
+                .register(meterRegistry);
+    }
+
+    /**
+     * Record an authentication failure (missing or invalid API key).
+     */
+    public void recordAuthFailure() {
+        authFailuresCounter.increment();
+    }
+
+    /**
+     * Record request latency with tags.
+     */
+    public void recordRequestLatency(String model, boolean stream, String status, long latencyMs) {
+        Timer.builder("agent_trace.request.latency")
+                .description("Request latency from client to response complete")
+                .tag("model", model != null ? ModelIdNormalizer.normalize(model) : "unknown")
+                .tag("stream", String.valueOf(stream))
+                .tag("status", status != null ? status : "unknown")
+                .register(meterRegistry)
+                .record(latencyMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Record request error.
+     */
+    public void recordRequestError(String errorType, boolean stream) {
+        Counter.builder("agent_trace.requests.errors.total")
+                .description("Total request errors")
+                .tag("error_type", errorType != null ? errorType : "unknown")
+                .tag("stream", String.valueOf(stream))
+                .register(meterRegistry)
+                .increment();
+    }
+
+    /**
+     * Record upstream API latency.
+     */
+    public void recordUpstreamLatency(String model, boolean stream, String status, long latencyMs) {
+        Timer.builder("agent_trace.upstream.latency")
+                .description("Upstream API call latency")
+                .tag("model", model != null ? ModelIdNormalizer.normalize(model) : "unknown")
+                .tag("stream", String.valueOf(stream))
+                .tag("status", status != null ? status : "unknown")
+                .register(meterRegistry)
+                .record(latencyMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Record upstream API error.
+     */
+    public void recordUpstreamError(String errorType, boolean stream) {
+        Counter.builder("agent_trace.upstream.errors.total")
+                .description("Total upstream API errors")
+                .tag("error_type", errorType != null ? errorType : "unknown")
+                .tag("stream", String.valueOf(stream))
+                .register(meterRegistry)
+                .increment();
     }
 
     @PostConstruct
@@ -155,12 +235,21 @@ public class TraceService {
         UserTraceMetrics metrics = userMetrics.computeIfAbsent(userId, UserTraceMetrics::new);
         metrics.incrementRequests();
 
-        // Register model counter
+        // Register model counter (no user tag to avoid high cardinality in Prometheus)
+        boolean streaming = Boolean.TRUE.equals(request.getStream());
         Counter.builder("agent_trace.requests.by_model")
                 .tag("model", normalizedModelId)
-                .tag("user", userId)
+                .tag("stream", String.valueOf(streaming))
                 .register(meterRegistry)
                 .increment();
+
+        // Track sessions (client-provided or inferred)
+        String sessionType = (clientSessionId != null && !clientSessionId.isBlank()) ? "client" : "inferred";
+        Counter.builder("agent_trace.sessions.by_type")
+                .tag("type", sessionType)
+                .register(meterRegistry)
+                .increment();
+        sessionsCounter.increment();
 
         log.debug("Started conversation {} for user {}, model {}", conversationId, userId, normalizedModelId);
         return conversationId;
@@ -202,7 +291,14 @@ public class TraceService {
 
         // Use lines touched (added + removed) instead of net change for more accurate metrics
         int linesTouched = linesAdded + linesRemoved;
-        totalLinesModifiedCounter.increment(linesTouched);
+        totalLinesTouchedCounter.increment(linesTouched);
+
+        // Also record edit tool by_name (previously missing for edit tools)
+        Counter.builder("agent_trace.tool_calls.by_name")
+                .tag("tool", toolName != null ? toolName : "unknown")
+                .tag("is_edit", "true")
+                .register(meterRegistry)
+                .increment();
 
         // Create range for this edit - mark as estimated since we derive from tool args, not actual diff
         Range range = Range.estimated(startLine, endLine);
@@ -287,9 +383,10 @@ public class TraceService {
             metrics.addToolCall(toolName);
         }
 
+        // Record by_name (no user tag to avoid high cardinality)
         Counter.builder("agent_trace.tool_calls.by_name")
-                .tag("tool", toolName)
-                .tag("user", context.userId)
+                .tag("tool", toolName != null ? toolName : "unknown")
+                .tag("is_edit", "false")
                 .register(meterRegistry)
                 .increment();
     }
@@ -464,6 +561,24 @@ public class TraceService {
         context.promptTokens = promptTokens;
         context.completionTokens = completionTokens;
         context.latencyMs = latencyMs;
+
+        // Prometheus token counters
+        totalInputTokensCounter.increment(promptTokens);
+        totalOutputTokensCounter.increment(completionTokens);
+
+        // Per-model token counters
+        String normalizedModel = context.normalizedModelId != null ? context.normalizedModelId : "unknown";
+        boolean streaming = context.stream;
+        Counter.builder("agent_trace.tokens.input.by_model")
+                .tag("model", normalizedModel)
+                .tag("stream", String.valueOf(streaming))
+                .register(meterRegistry)
+                .increment(promptTokens);
+        Counter.builder("agent_trace.tokens.output.by_model")
+                .tag("model", normalizedModel)
+                .tag("stream", String.valueOf(streaming))
+                .register(meterRegistry)
+                .increment(completionTokens);
 
         UserTraceMetrics metrics = userMetrics.get(context.userId);
         if (metrics != null) {

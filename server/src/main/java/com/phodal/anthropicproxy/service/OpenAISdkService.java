@@ -76,6 +76,11 @@ public class OpenAISdkService {
                 try {
                     completion = client.chat().completions().create(params);
                 } catch (Exception e) {
+                    long latencyMs = System.currentTimeMillis() - startTime;
+                    // Record upstream error and latency metrics
+                    traceService.recordUpstreamError(e.getClass().getSimpleName(), false);
+                    traceService.recordUpstreamLatency(anthropicRequest.getModel(), false, "error", latencyMs);
+                    
                     clientSpan.setStatus(StatusCode.ERROR, e.getMessage());
                     clientSpan.recordException(e);
                     throw e;
@@ -83,6 +88,9 @@ public class OpenAISdkService {
                 
                 long latencyMs = System.currentTimeMillis() - startTime;
                 clientSpan.setAttribute("ai.latency_ms", latencyMs);
+                
+                // Record upstream latency metric (success)
+                traceService.recordUpstreamLatency(anthropicRequest.getModel(), false, "ok", latencyMs);
                 
                 // Record response metrics
                 int promptTokens = 0, completionTokens = 0;
@@ -377,6 +385,9 @@ public class OpenAISdkService {
                     clientSpan.setAttribute("ai.tool_call_count", collectedToolCalls.size());
                     clientSpan.setStatus(StatusCode.OK);
                     
+                    // Record upstream latency metric (success)
+                    traceService.recordUpstreamLatency(anthropicRequest.getModel(), true, "ok", latencyMs);
+                    
                     // Record response metrics (tokens and latency)
                     traceService.recordResponse(conversationId, promptTokens[0], completionTokens[0], latencyMs);
                     // Record tool calls but do NOT end conversation here.
@@ -388,6 +399,12 @@ public class OpenAISdkService {
                 }
             } catch (Exception e) {
                 log.error("Error during streaming: {}", e.getMessage(), e);
+                long latencyMs = System.currentTimeMillis() - startTime;
+                
+                // Record upstream error and latency metrics
+                traceService.recordUpstreamError(e.getClass().getSimpleName(), true);
+                traceService.recordUpstreamLatency(anthropicRequest.getModel(), true, "error", latencyMs);
+                
                 clientSpan.setStatus(StatusCode.ERROR, e.getMessage());
                 clientSpan.recordException(e);
                 clientSpan.close();

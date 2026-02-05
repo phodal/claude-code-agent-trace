@@ -270,19 +270,53 @@ curl http://localhost:8080/actuator/prometheus
 
 这些指标由 `TraceService` 通过 Micrometer 注册并在 `/actuator/prometheus` 暴露。
 
+##### 请求与会话
+
 | 指标名 | 类型 | 何时增加（统计口径） | 标签（tags） | 单位/值含义 | 备注 |
 |---|---|---|---|---|---|
 | `agent_trace.requests.total` | Counter | 每次进入 `POST /anthropic/v1/messages` 且通过 API Key 校验后（`startConversation()`）+1 | 无 | 请求数 | 未携带/无效 API Key 的 401 不计入 |
-| `agent_trace.requests.by_model` | Counter | 同上，每次请求 +1 | `model`（normalize 后）、`user` | 请求数 | **包含 user tag**，Prometheus 侧可能带来较高基数 |
+| `agent_trace.requests.by_model` | Counter | 同上，每次请求 +1 | `model`、`stream` | 请求数 | 已移除 user tag 以避免高基数 |
+| `agent_trace.auth.failures.total` | Counter | 请求缺失或无效 API Key 时 +1 | 无 | 鉴权失败数 | 用于监控 401 被刷情况 |
+| `agent_trace.sessions.total` | Counter | 每次 `startConversation()` +1 | 无 | 会话数 | 与 requests.total 一致 |
+| `agent_trace.sessions.by_type` | Counter | 同上 | `type`（client/inferred） | 会话数 | client=客户端提供 sessionId；inferred=服务端推断 |
+
+##### 延迟与错误
+
+| 指标名 | 类型 | 何时增加（统计口径） | 标签（tags） | 单位/值含义 | 备注 |
+|---|---|---|---|---|---|
+| `agent_trace.request.latency` | Timer | 请求完成时（成功或失败） | `model`、`stream`、`status` | 毫秒 | 从 Controller 接收请求到响应完成 |
+| `agent_trace.requests.errors.total` | Counter | 请求处理异常时 +1 | `error_type`、`stream` | 错误数 | error_type=异常类名 |
+| `agent_trace.upstream.latency` | Timer | upstream API 调用完成时 | `model`、`stream`、`status` | 毫秒 | 从发起 OpenAI SDK 调用到响应完成 |
+| `agent_trace.upstream.errors.total` | Counter | upstream API 调用异常时 +1 | `error_type`、`stream` | 错误数 | error_type=异常类名 |
+
+##### 工具调用与文件编辑
+
+| 指标名 | 类型 | 何时增加（统计口径） | 标签（tags） | 单位/值含义 | 备注 |
+|---|---|---|---|---|---|
 | `agent_trace.tool_calls.total` | Counter | 每记录一次 tool call（包含编辑类与非编辑类）+1 | 无 | 工具调用数 | tool call 来自 upstream OpenAI tool_calls（streaming 会在结束时批量记录） |
-| `agent_trace.tool_calls.by_name` | Counter | 每记录一次 **非编辑类** tool call +1 | `tool`、`user` | 工具调用数 | **当前不包含编辑类 tool call**（编辑类会走 file_edit 逻辑并提前 return） |
-| `agent_trace.file_edits.total` | Counter | 当 tool call 被判定为“编辑类”且能从 args 解析到 `file_path/path/filePath` 时 +1 | 无 | 文件编辑次数 | 目前仅 `recordToolCall()` 触发（项目内未直接调用 `recordFileEdit()`） |
-| `agent_trace.lines_modified.total` | Counter | 每次记录 file edit 时增加 \(linesAdded + linesRemoved\) | 无 | 修改行数（触达行） | **估算值**：从 tool args 的 `old_string/new_string` 或 `content` 推断行数，不等同于真实 diff |
+| `agent_trace.tool_calls.by_name` | Counter | 每记录一次 tool call +1 | `tool`、`is_edit` | 工具调用数 | 已移除 user tag；is_edit 区分编辑类/非编辑类 |
+| `agent_trace.file_edits.total` | Counter | 当 tool call 被判定为"编辑类"且能从 args 解析到 `file_path/path/filePath` 时 +1 | 无 | 文件编辑次数 | 仅 `recordToolCall()` 触发 |
+| `agent_trace.lines_touched.estimated.total` | Counter | 每次记录 file edit 时增加 (linesAdded + linesRemoved) | 无 | 触达行数（估算） | **估算值**：从 tool args 推断，不等同于真实 diff |
+
+##### Token 统计
+
+| 指标名 | 类型 | 何时增加（统计口径） | 标签（tags） | 单位/值含义 | 备注 |
+|---|---|---|---|---|---|
+| `agent_trace.tokens.input.total` | Counter | `recordResponse()` 时增加 promptTokens | 无 | input tokens | 全局累加 |
+| `agent_trace.tokens.output.total` | Counter | `recordResponse()` 时增加 completionTokens | 无 | output tokens | 全局累加 |
+| `agent_trace.tokens.input.by_model` | Counter | 同上 | `model`、`stream` | input tokens | 按模型拆分 |
+| `agent_trace.tokens.output.by_model` | Counter | 同上 | `model`、`stream` | output tokens | 按模型拆分 |
 
 #### 备注：编辑类工具识别与行数估算
 
 - **编辑类工具识别**：tool name 命中内置列表（如 `str_replace_editor`/`EditNotebook` 等）或包含 `edit/write/replace/create_file/modify` 关键字。
-- **行数估算**：从 tool args JSON 中优先读取 `old_string/new_string`（或变体）计算行数；否则读取 `content/contents`；最终以 “增加行数 + 删除行数” 作为 `lines_modified` 口径。
+- **行数估算**：从 tool args JSON 中优先读取 `old_string/new_string`（或变体）计算行数；否则读取 `content/contents`；最终以 "增加行数 + 删除行数" 作为 `lines_touched` 口径（重命名以强调估算性质）。
+
+#### 关于高基数风险
+
+为避免 Prometheus 高基数问题，以下维度设计做了权衡：
+- **user tag 已移除**：`requests.by_model`、`tool_calls.by_name` 不再包含 user 维度（用户级指标可通过 dashboard `/metrics/api/users` 获取）。
+- **error_type / tool name**：仍可能带来一定基数，生产环境建议根据实际使用量评估是否需要进一步聚合。
 
 ## Docker 部署
 
@@ -368,7 +402,7 @@ claude
 [Bringing Observability to Claude Code: OpenTelemetry in Action](https://signoz.io/blog/claude-code-monitoring-with-opentelemetry/)
 
 - Total token usage & cost → How much are we spending, and where are those tokens going?
-- Sessions, conversations & requests per user → Who’s using Claude regularly, and what does “active usage” really look like?
+- Sessions, conversations & requests per user → Who's using Claude regularly, and what does "active usage" really look like?
 - Quota visibility → How close are we to hitting limits (like the 5-hour quota), and do we need to adjust capacity?
 - Performance trends → From command duration over time to request success rate, are developers getting fast, reliable responses?
 - Behavior insights → Which terminals are people using (VS Code, Apple Terminal, etc.), how are decisions distributed (accept vs. reject), and what tool types are most popular?
